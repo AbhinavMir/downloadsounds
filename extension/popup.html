@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>YTD DJ</h1>
+      <div id="status" class="status">checking helper...</div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active" data-root="audio">Audio</button>
+      <button class="tab" data-root="video">Video</button>
+      <button id="open-browser" class="tab open-btn">Open browser ↗</button>
+    </div>
+
+    <div class="controls">
+      <input type="search" id="filter" placeholder="Filter library..." />
+      <button id="refresh" title="Refresh">↻</button>
+    </div>
+
+    <div id="library" class="library">Loading...</div>
+
+    <footer>
+      <span id="count"></span>
+      <a id="open-folder" href="#">Copy path</a>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

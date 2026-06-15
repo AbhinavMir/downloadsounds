@@ -1,0 +1,203 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: #eee;
+  background: #141414;
+  min-height: 100vh;
+}
+
+header {
+  position: sticky;
+  top: 0;
+  background: #1a1a1a;
+  border-bottom: 1px solid #2a2a2a;
+  padding: 14px 24px 0;
+  z-index: 10;
+}
+.title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+h1 { margin: 0; font-size: 18px; font-weight: 600; color: #fff; }
+.status { font-size: 12px; color: #888; }
+.status.ok { color: #4caf50; }
+.status.err { color: #ff6b6b; }
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 8px;
+}
+.tab {
+  background: transparent;
+  border: none;
+  color: #888;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+}
+.tab:hover { color: #ddd; }
+.tab.active { color: #fff; border-bottom-color: #cc0000; }
+
+#filter {
+  margin-left: auto;
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #eee;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  width: 220px;
+}
+#filter:focus { outline: none; border-color: #cc0000; }
+#refresh {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #ccc;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#refresh:hover { background: #333; }
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 12px;
+  font-size: 13px;
+  color: #aaa;
+  flex-wrap: wrap;
+}
+.crumb {
+  color: #4a9eff;
+  cursor: pointer;
+  text-decoration: none;
+}
+.crumb:hover { text-decoration: underline; }
+.crumb-sep { color: #555; }
+.crumb.current { color: #ddd; cursor: default; }
+.crumb.current:hover { text-decoration: none; }
+
+.browser {
+  padding: 16px 24px 120px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
+}
+.loading, .empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 60px;
+  color: #777;
+  font-style: italic;
+}
+
+.entry {
+  background: #1f1f1f;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 50px;
+}
+.entry:hover { background: #262626; border-color: #3a3a3a; }
+.entry .icon { font-size: 20px; flex-shrink: 0; }
+.entry .body {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.entry .name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #eee;
+}
+.entry .meta {
+  font-size: 11px;
+  color: #888;
+  margin-top: 2px;
+}
+.entry .actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.entry:hover .actions { opacity: 1; }
+.entry .action-btn {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #ccc;
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.entry .action-btn:hover { background: #3a3a3a; }
+.entry .action-btn.danger:hover { background: #4a1a1a; color: #ff6b6b; }
+
+.entry.folder .body:hover .name { color: #4a9eff; }
+.entry.file.playing { border-color: #cc0000; }
+
+.player-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #1a1a1a;
+  border-top: 1px solid #2a2a2a;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 20;
+}
+.player-info { min-width: 0; flex: 0 1 280px; }
+.player-title {
+  font-weight: 500;
+  font-size: 13px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player-path {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player-media { flex: 1; display: flex; justify-content: center; }
+.player-media audio { width: 100%; max-width: 600px; }
+.player-media video { max-height: 240px; max-width: 100%; border-radius: 6px; }
+#player-close {
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 22px;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+}
+#player-close:hover { color: #fff; }
+
+.hidden { display: none !important; }

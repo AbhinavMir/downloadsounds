@@ -1,0 +1,124 @@
+* { box-sizing: border-box; }
+html, body {
+  width: 380px;
+  max-height: 600px;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  color: #eee;
+  background: #1a1a1a;
+}
+header {
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid #2a2a2a;
+}
+h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+}
+.status {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+.status.ok { color: #4caf50; }
+.status.err { color: #ff6b6b; }
+
+.tabs {
+  display: flex;
+  border-bottom: 1px solid #2a2a2a;
+  padding: 0 6px;
+  gap: 2px;
+}
+.tab {
+  background: transparent;
+  border: none;
+  color: #888;
+  padding: 8px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+}
+.tab:hover { color: #ddd; }
+.tab.active {
+  color: #fff;
+  border-bottom-color: #cc0000;
+}
+.tab.open-btn {
+  margin-left: auto;
+  color: #4a9eff;
+}
+.tab.open-btn:hover { color: #6cb2ff; }
+
+.controls {
+  display: flex;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #2a2a2a;
+}
+#filter {
+  flex: 1;
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #eee;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+#filter:focus { outline: none; border-color: #cc0000; }
+#refresh {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #ccc;
+  width: 30px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#refresh:hover { background: #333; }
+
+.library {
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+.group { padding: 4px 0; }
+.group-header {
+  padding: 6px 14px 3px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+  font-weight: 600;
+}
+.item {
+  padding: 5px 14px 5px 22px;
+  font-size: 12.5px;
+  color: #ddd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+.item:hover { background: #232323; }
+
+.empty {
+  padding: 24px 14px;
+  color: #777;
+  text-align: center;
+  font-style: italic;
+}
+
+footer {
+  padding: 8px 14px;
+  border-top: 1px solid #2a2a2a;
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #888;
+}
+footer a { color: #cc4444; text-decoration: none; cursor: pointer; }
+footer a:hover { text-decoration: underline; }
