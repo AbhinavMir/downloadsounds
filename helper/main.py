@@ -19,8 +19,13 @@ AUDIO_DIR = Path.home() / "YTD_DJ"
 VIDEO_DIR = Path.home() / "YTD_DJ_Video"
 CONFIG_DIR = Path.home() / ".ytd_dj"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+HISTORY_FILE = CONFIG_DIR / "history.json"
 PORT = 7531
 MODEL = "claude-sonnet-4-6"
+
+YOUTUBE_ID_RE = re.compile(
+    r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|v/))([A-Za-z0-9_-]{11})"
+)
 
 AUDIO_DIR.mkdir(exist_ok=True)
 VIDEO_DIR.mkdir(exist_ok=True)
@@ -98,6 +103,39 @@ def safe_path(kind: str, rel: str) -> Path:
     if base != target and base not in target.parents:
         raise HTTPException(400, "Path traversal blocked")
     return target
+
+
+def extract_video_id(url: str) -> str | None:
+    if not url:
+        return None
+    m = YOUTUBE_ID_RE.search(url)
+    return m.group(1) if m else None
+
+
+def read_history() -> dict:
+    if not HISTORY_FILE.exists():
+        return {}
+    try:
+        data = json.loads(HISTORY_FILE.read_text() or "{}")
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_history(hist: dict) -> None:
+    try:
+        HISTORY_FILE.write_text(json.dumps(hist, indent=2))
+    except OSError as e:
+        print(f"History write failed: {e}", file=sys.stderr)
+
+
+def record_download(video_id: str | None, kind: str, rel_path: str) -> None:
+    if not video_id:
+        return
+    hist = read_history()
+    entry = hist.setdefault(video_id, {})
+    entry[kind] = rel_path
+    write_history(hist)
 
 
 def list_folders(base: Path) -> list[dict]:
@@ -290,11 +328,14 @@ def download(req: DownloadRequest):
     if kind == "audio":
         write_id3(final_path, info, title, artist, id3_genre)
 
+    rel_path = str(final_path.relative_to(base_root))
+    record_download(extract_video_id(req.url) or info.get("id"), kind, rel_path)
+
     return {
         "success": True,
         "kind": kind,
         "path": str(final_path),
-        "rel_path": str(final_path.relative_to(base_root)),
+        "rel_path": rel_path,
         "top_folder": top,
         "sub_folder": sub,
         "folder": f"{top}/{sub}",
@@ -303,6 +344,34 @@ def download(req: DownloadRequest):
         "id3_genre": id3_genre,
         "source_url": req.url,
     }
+
+
+@app.get("/check")
+def check(url: str = Query(...)):
+    vid = extract_video_id(url)
+    result = {"video_id": vid, "audio": None, "video": None}
+    if not vid:
+        return result
+    hist = read_history()
+    entry = hist.get(vid, {})
+    if not entry:
+        return result
+
+    pruned = dict(entry)
+    for kind, root in ROOTS.items():
+        rel = entry.get(kind)
+        if rel and (root / rel).exists():
+            result[kind] = rel
+        elif rel:
+            pruned.pop(kind, None)
+
+    if pruned != entry:
+        if pruned:
+            hist[vid] = pruned
+        else:
+            hist.pop(vid, None)
+        write_history(hist)
+    return result
 
 
 @app.get("/library")
@@ -399,6 +468,16 @@ def delete_file(root: str = Query("audio"), path: str = Query(...)):
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "File not found")
     target.unlink()
+    hist = read_history()
+    changed = False
+    for vid, entry in list(hist.items()):
+        if entry.get(root) == path:
+            entry.pop(root, None)
+            changed = True
+            if not entry:
+                hist.pop(vid)
+    if changed:
+        write_history(hist)
     return {"ok": True, "deleted": str(target)}
 
 

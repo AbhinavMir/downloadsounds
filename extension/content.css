@@ -25,3 +25,10 @@
 .ytd-dj-btn:disabled { cursor: default; opacity: 0.85; }
 .ytd-dj-btn.ytd-dj-ok { background: #0a8a0a !important; }
 .ytd-dj-btn.ytd-dj-err { background: #555 !important; }
+.ytd-dj-btn.ytd-dj-done {
+  background: #1f6b1f !important;
+  color: #d8ffd8 !important;
+}
+.ytd-dj-btn.ytd-dj-done:hover:not(:disabled) {
+  background: #267026 !important;
+}

@@ -1,6 +1,8 @@
 (function () {
   const HELPER = "http://127.0.0.1:7531";
   const WRAP_ID = "ytd-dj-buttons";
+  const LABELS = { audio: "Download MP3", video: "Download Video" };
+  const DONE_LABELS = { audio: "Audio downloaded", video: "Video downloaded" };
 
   function findAnchor() {
     return (
@@ -17,7 +19,32 @@
     btn.textContent = text;
   }
 
-  async function handleClick(btn, kind, defaultLabel) {
+  function setDownloaded(btn, kind, relPath) {
+    btn.dataset.downloadedPath = relPath;
+    btn.disabled = false;
+    btn.title = `Saved at ${relPath} — click to reveal in Finder`;
+    setState(btn, "done", DONE_LABELS[kind]);
+  }
+
+  function clearDownloaded(btn, kind) {
+    delete btn.dataset.downloadedPath;
+    btn.title = "";
+    setState(btn, null, LABELS[kind]);
+  }
+
+  async function handleClick(btn, kind) {
+    if (btn.dataset.downloadedPath) {
+      try {
+        await fetch(
+          `${HELPER}/reveal?root=${kind}&path=${encodeURIComponent(btn.dataset.downloadedPath)}`,
+          { method: "POST" },
+        );
+      } catch (e) {
+        console.error("[YTD DJ] reveal failed", e);
+      }
+      return;
+    }
+
     btn.disabled = true;
     setState(btn, null, kind === "video" ? "Downloading video..." : "Downloading...");
     try {
@@ -34,26 +61,37 @@
       }
       const data = JSON.parse(text);
       setState(btn, "ok", `Saved → ${data.folder}`);
+      setTimeout(() => setDownloaded(btn, kind, data.rel_path), 2200);
     } catch (e) {
       const msg = e.message || String(e);
       const short = msg.length > 60 ? msg.slice(0, 57) + "..." : msg;
       setState(btn, "err", short);
-      console.error("[YTD DJ]", e);
+      setTimeout(() => clearDownloaded(btn, kind), 4000);
     } finally {
-      setTimeout(() => {
-        setState(btn, null, defaultLabel);
-        btn.disabled = false;
-      }, 4000);
+      btn.disabled = false;
     }
   }
 
-  function makeButton(kind, label, klass) {
+  function makeButton(kind, klass) {
     const btn = document.createElement("button");
     btn.className = klass;
     btn.dataset.baseClass = klass;
-    btn.textContent = label;
-    btn.addEventListener("click", () => handleClick(btn, kind, label));
+    btn.dataset.kind = kind;
+    btn.textContent = LABELS[kind];
+    btn.addEventListener("click", () => handleClick(btn, kind));
     return btn;
+  }
+
+  async function applyExistingStatus(audioBtn, videoBtn) {
+    try {
+      const res = await fetch(`${HELPER}/check?url=${encodeURIComponent(location.href)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.audio) setDownloaded(audioBtn, "audio", data.audio);
+      if (data.video) setDownloaded(videoBtn, "video", data.video);
+    } catch (e) {
+      // Helper not running — leave buttons in default state.
+    }
   }
 
   function injectButtons() {
@@ -63,9 +101,12 @@
     if (!anchor) return;
     const wrap = document.createElement("span");
     wrap.id = WRAP_ID;
-    wrap.appendChild(makeButton("audio", "Download MP3", "ytd-dj-btn ytd-dj-audio"));
-    wrap.appendChild(makeButton("video", "Download Video", "ytd-dj-btn ytd-dj-video"));
+    const audioBtn = makeButton("audio", "ytd-dj-btn ytd-dj-audio");
+    const videoBtn = makeButton("video", "ytd-dj-btn ytd-dj-video");
+    wrap.appendChild(audioBtn);
+    wrap.appendChild(videoBtn);
     anchor.appendChild(wrap);
+    applyExistingStatus(audioBtn, videoBtn);
   }
 
   let lastUrl = location.href;
