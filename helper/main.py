@@ -4,6 +4,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
+import urllib.request
 from pathlib import Path
 
 import yt_dlp
@@ -22,6 +25,9 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 PORT = 7531
 MODEL = "claude-sonnet-4-6"
+VERSION = "0.2.0"
+REPO = "AbhinavMir/downloadsounds"
+REMOTE_VERSION_URL = f"https://raw.githubusercontent.com/{REPO}/main/VERSION"
 
 YOUTUBE_ID_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|v/))([A-Za-z0-9_-]{11})"
@@ -247,11 +253,75 @@ def write_id3(mp3_path: Path, info: dict, title: str, artist: str, id3_genre: st
 def status():
     return {
         "ok": True,
+        "version": VERSION,
         "audio_root": str(AUDIO_DIR),
         "video_root": str(VIDEO_DIR),
         "yt_dlp": shutil.which("yt-dlp") or "python module",
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "has_api_key": bool(get_api_key()),
+    }
+
+
+@app.get("/version")
+def version_info():
+    latest = None
+    error = None
+    try:
+        req = urllib.request.Request(
+            REMOTE_VERSION_URL, headers={"User-Agent": "YTD_DJ-Helper"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            latest = r.read().decode().strip()
+    except Exception as e:
+        error = str(e)
+    return {
+        "local": VERSION,
+        "latest": latest,
+        "update_available": bool(latest) and latest != VERSION,
+        "error": error,
+    }
+
+
+@app.post("/update")
+def update():
+    repo_root = Path(__file__).resolve().parent.parent
+    if not (repo_root / ".git").exists():
+        raise HTTPException(
+            400,
+            f"Not a git checkout at {repo_root}. Pull updates manually.",
+        )
+    try:
+        before = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"], text=True
+        ).strip()
+        subprocess.run(
+            ["git", "-C", str(repo_root), "fetch", "--quiet"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_root), "pull", "--ff-only", "--quiet"],
+            check=True, capture_output=True, text=True,
+        )
+        after = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"], text=True
+        ).strip()
+    except subprocess.CalledProcessError as e:
+        msg = (e.stderr or e.stdout or str(e)).strip()
+        raise HTTPException(500, f"git failed: {msg}")
+
+    updated = before != after
+    if updated:
+        def deferred_exit():
+            time.sleep(1)
+            os._exit(0)
+        threading.Thread(target=deferred_exit, daemon=True).start()
+
+    return {
+        "ok": True,
+        "updated": updated,
+        "before": before[:7],
+        "after": after[:7],
+        "will_restart": updated,
     }
 
 

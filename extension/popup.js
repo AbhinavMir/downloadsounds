@@ -1,9 +1,51 @@
 const HELPER = "http://127.0.0.1:7531";
+const VERSION_URL = "https://raw.githubusercontent.com/AbhinavMir/downloadsounds/main/VERSION";
 
 const $ = (id) => document.getElementById(id);
 let allItems = [];
 let libraryRoot = "";
 let currentRoot = "audio";
+
+async function checkForUpdate() {
+  const local = chrome.runtime.getManifest().version;
+  let latest = null;
+  try {
+    const r = await fetch(VERSION_URL, { cache: "no-store" });
+    if (r.ok) latest = (await r.text()).trim();
+  } catch {}
+  if (!latest || latest === local) return;
+
+  const banner = $("update-banner");
+  $("update-text").textContent = `Update available: ${local} → ${latest}`;
+  banner.classList.remove("hidden", "success", "error");
+}
+
+async function applyUpdate() {
+  const banner = $("update-banner");
+  const btn = $("update-btn");
+  btn.disabled = true;
+  $("update-text").textContent = "Updating...";
+  try {
+    const res = await fetch(`${HELPER}/update`, { method: "POST" });
+    const text = await res.text();
+    let data = {};
+    try { data = JSON.parse(text); } catch {}
+    if (!res.ok) throw new Error(data.detail || text || "Update failed");
+    if (data.updated) {
+      $("update-text").textContent = `Updated ${data.before} → ${data.after}. Reloading...`;
+      banner.classList.add("success");
+      setTimeout(() => chrome.runtime.reload(), 2500);
+    } else {
+      $("update-text").textContent = "Already up to date.";
+      banner.classList.add("success");
+      setTimeout(() => banner.classList.add("hidden"), 2000);
+    }
+  } catch (e) {
+    $("update-text").textContent = `Update failed: ${e.message}`;
+    banner.classList.add("error");
+    btn.disabled = false;
+  }
+}
 
 async function checkStatus() {
   const el = $("status");
@@ -121,5 +163,8 @@ $("open-folder").addEventListener("click", (e) => {
   }
 });
 
+$("update-btn").addEventListener("click", applyUpdate);
+
 checkStatus();
 loadLibrary();
+checkForUpdate();
