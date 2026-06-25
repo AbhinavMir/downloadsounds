@@ -27,7 +27,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 DB_FILE = CONFIG_DIR / "library.db"
 PORT = 7531
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL_BY_PROVIDER = {
@@ -86,6 +86,28 @@ class CompletedUpdate(BaseModel):
     root: str
     path: str
     completed: bool = True
+
+
+class RenameRequest(BaseModel):
+    root: str
+    old_path: str
+    new_name: str
+
+
+class MoveRequest(BaseModel):
+    root: str
+    old_path: str
+    new_dir: str
+
+
+class CreateFolderRequest(BaseModel):
+    root: str
+    path: str
+
+
+class ReclassifyRequest(BaseModel):
+    root: str
+    path: str
 
 
 def _parse_config_file() -> dict:
@@ -396,6 +418,35 @@ def db_delete_file(root: str, rel_path: str) -> None:
             (root, rel_path),
         )
         conn.commit()
+
+
+def db_update_path(root: str, old_rel: str, new_rel: str) -> None:
+    with closing(db_connect()) as conn:
+        conn.execute(
+            "UPDATE files SET rel_path = ? WHERE root = ? AND rel_path = ?",
+            (new_rel, root, old_rel),
+        )
+        conn.commit()
+
+
+def db_update_content_type(root: str, rel_path: str, content_type: str) -> None:
+    with closing(db_connect()) as conn:
+        conn.execute(
+            "UPDATE files SET content_type = ? WHERE root = ? AND rel_path = ?",
+            (content_type, root, rel_path),
+        )
+        conn.commit()
+
+
+def history_update_path(root: str, old_rel: str, new_rel: str) -> None:
+    hist = read_history()
+    changed = False
+    for entry in hist.values():
+        if entry.get(root) == old_rel:
+            entry[root] = new_rel
+            changed = True
+    if changed:
+        write_history(hist)
 
 
 def db_backfill_from_disk() -> int:
@@ -1161,6 +1212,157 @@ def db_continue_endpoint(root: str = Query("audio"), limit: int = Query(20, ge=1
 def db_backfill_endpoint():
     added = db_backfill_from_disk()
     return {"ok": True, "added": added}
+
+
+@app.post("/file/rename")
+def rename_file(req: RenameRequest):
+    if "/" in req.new_name or "\\" in req.new_name or req.new_name.startswith("."):
+        raise HTTPException(400, "Name may not contain path separators or start with a dot")
+    old = safe_path(req.root, req.old_path)
+    if not old.is_file():
+        raise HTTPException(404, "File not found")
+
+    clean = NAME_CHARS.sub("", req.new_name).strip()
+    if not clean:
+        raise HTTPException(400, "Name is empty after sanitization")
+    if "." not in clean:
+        clean = clean + old.suffix
+    new_target = old.parent / clean
+    if new_target.exists() and new_target != old:
+        raise HTTPException(409, f"A file named '{clean}' already exists here")
+
+    old.rename(new_target)
+    new_rel = str(new_target.relative_to(root_for(req.root)))
+    try:
+        db_update_path(req.root, req.old_path, new_rel)
+        history_update_path(req.root, req.old_path, new_rel)
+    except Exception as e:
+        print(f"DB/history update after rename failed (non-fatal): {e}", file=sys.stderr)
+    return {"ok": True, "new_path": new_rel}
+
+
+@app.post("/file/move")
+def move_file_endpoint(req: MoveRequest):
+    old = safe_path(req.root, req.old_path)
+    if not old.is_file():
+        raise HTTPException(404, "File not found")
+
+    base = root_for(req.root)
+    raw_dir = (req.new_dir or "").strip("/")
+    if raw_dir:
+        new_dir = safe_path(req.root, raw_dir)
+        new_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        new_dir = base
+
+    new_target = new_dir / old.name
+    if new_target.exists() and new_target != old:
+        raise HTTPException(409, f"A file named '{old.name}' already exists at {raw_dir or '/'}")
+
+    if new_target == old:
+        return {"ok": True, "new_path": req.old_path, "moved": False}
+
+    shutil.move(str(old), str(new_target))
+    new_rel = str(new_target.relative_to(base))
+    try:
+        db_update_path(req.root, req.old_path, new_rel)
+        history_update_path(req.root, req.old_path, new_rel)
+    except Exception as e:
+        print(f"DB/history update after move failed (non-fatal): {e}", file=sys.stderr)
+    return {"ok": True, "new_path": new_rel, "moved": True}
+
+
+@app.post("/folder/create")
+def create_folder(req: CreateFolderRequest):
+    target = safe_path(req.root, req.path)
+    if target.exists() and target.is_dir():
+        return {"ok": True, "existed": True, "path": req.path}
+    target.mkdir(parents=True, exist_ok=True)
+    return {"ok": True, "existed": False, "path": req.path}
+
+
+@app.post("/file/reclassify")
+def reclassify(req: ReclassifyRequest):
+    old = safe_path(req.root, req.path)
+    if not old.is_file():
+        raise HTTPException(404, "File not found")
+
+    record = db_get_file(req.root, req.path)
+    if not record or not record.get("source_url"):
+        raise HTTPException(400, "No source URL recorded for this file — cannot reclassify")
+
+    source_url = record["source_url"]
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True}) as ydl:
+            info = ydl.extract_info(source_url, download=False)
+    except Exception as e:
+        raise HTTPException(400, f"yt-dlp failed: {e}")
+
+    base_root = root_for(req.root)
+    try:
+        decision = categorize(info, list_folders(base_root))
+    except json.JSONDecodeError as e:
+        raise HTTPException(500, f"AI returned invalid JSON: {e}")
+
+    content_type = str(decision.get("content_type") or "music").lower()
+    if content_type not in CONTENT_TYPES:
+        content_type = "music"
+    if content_type in FORCED_TOP_BY_TYPE:
+        top = FORCED_TOP_BY_TYPE[content_type]
+    else:
+        top = slugify(decision.get("top_folder"), "unsorted")
+    sub = slugify(decision.get("sub_folder"), "general")
+
+    new_dir = base_root / top / sub
+    new_dir.mkdir(parents=True, exist_ok=True)
+    new_target = new_dir / old.name
+
+    if new_target == old:
+        try:
+            db_update_content_type(req.root, req.path, content_type)
+        except Exception as e:
+            print(f"DB content_type update failed (non-fatal): {e}", file=sys.stderr)
+        return {
+            "ok": True,
+            "moved": False,
+            "folder": f"{top}/{sub}",
+            "content_type": content_type,
+            "new_path": req.path,
+        }
+
+    counter = 1
+    while new_target.exists():
+        new_target = new_dir / f"{old.stem} ({counter}){old.suffix}"
+        counter += 1
+
+    shutil.move(str(old), str(new_target))
+    new_rel = str(new_target.relative_to(base_root))
+    try:
+        db_update_path(req.root, req.path, new_rel)
+        db_update_content_type(req.root, new_rel, content_type)
+        history_update_path(req.root, req.path, new_rel)
+    except Exception as e:
+        print(f"DB/history update after reclassify failed (non-fatal): {e}", file=sys.stderr)
+
+    return {
+        "ok": True,
+        "moved": True,
+        "new_path": new_rel,
+        "folder": f"{top}/{sub}",
+        "content_type": content_type,
+    }
+
+
+@app.get("/folders")
+def list_all_folders(root: str = Query(...)):
+    """Flat list of every directory under the given root, for move-to pickers."""
+    base = root_for(root)
+    out = []
+    for child in base.rglob("*"):
+        if child.is_dir() and not child.name.startswith("."):
+            out.append(str(child.relative_to(base)))
+    out.sort()
+    return {"root": root, "folders": out}
 
 
 try:

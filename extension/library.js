@@ -183,6 +183,10 @@ async function renderBrowser() {
       ev.stopPropagation();
       deleteFile(f);
     });
+    e.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      showFileContextMenu(ev.clientX, ev.clientY, f, e);
+    });
     frag.appendChild(e);
   }
 
@@ -460,6 +464,225 @@ $("refresh").addEventListener("click", () => {
   load();
 });
 $("player-close").addEventListener("click", closePlayer);
+
+// ---- File ops ----
+
+function showFileContextMenu(x, y, file, rowEl) {
+  const menu = $("context-menu");
+  menu.innerHTML = "";
+  const isPlayable = file.ext === "mp3" || file.ext === "mp4" || file.ext === "m4a";
+
+  const items = [];
+  if (isPlayable) items.push({ label: "Play", fn: () => play(file) });
+  items.push({ label: "Rename...", fn: () => beginRename(rowEl, file) });
+  items.push({ label: "Move to folder...", fn: () => openMoveModal(file) });
+  items.push({ label: "Reveal in Finder", fn: () => reveal(file.rel_path) });
+  items.push({ label: "Re-categorize (AI)", fn: () => reclassify(file) });
+  items.push({ sep: true });
+  items.push({ label: "Delete", danger: true, fn: () => deleteFile(file) });
+
+  for (const it of items) {
+    if (it.sep) {
+      const s = document.createElement("div");
+      s.className = "sep";
+      menu.appendChild(s);
+      continue;
+    }
+    const el = document.createElement("div");
+    el.className = "item" + (it.danger ? " danger" : "");
+    el.textContent = it.label;
+    el.addEventListener("click", () => {
+      menu.classList.add("hidden");
+      it.fn();
+    });
+    menu.appendChild(el);
+  }
+
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  menu.style.left = Math.min(x, vw - 220) + "px";
+  menu.style.top = Math.min(y, vh - 240) + "px";
+  menu.classList.remove("hidden");
+}
+
+document.addEventListener("click", (e) => {
+  const menu = $("context-menu");
+  if (!menu.contains(e.target)) menu.classList.add("hidden");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Escape") $("context-menu").classList.add("hidden");
+});
+
+function beginRename(rowEl, file) {
+  const nameEl = rowEl.querySelector(".name");
+  if (!nameEl) return;
+  const originalText = nameEl.textContent;
+  nameEl.classList.add("editing");
+  nameEl.contentEditable = "plaintext-only";
+  nameEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(nameEl);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  const cleanup = () => {
+    nameEl.classList.remove("editing");
+    nameEl.contentEditable = "false";
+    nameEl.removeEventListener("keydown", onKey);
+    nameEl.removeEventListener("blur", onBlur);
+  };
+
+  const commit = async () => {
+    const newName = nameEl.textContent.trim();
+    cleanup();
+    if (!newName || newName === originalText) {
+      nameEl.textContent = originalText;
+      return;
+    }
+    try {
+      const res = await fetch(`${HELPER}/file/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root: currentRoot, old_path: file.rel_path, new_name: newName }),
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        let m = t;
+        try { m = JSON.parse(t).detail || t; } catch {}
+        throw new Error(m);
+      }
+      load();
+    } catch (e) {
+      alert(`Rename failed: ${e.message}`);
+      nameEl.textContent = originalText;
+    }
+  };
+
+  const onKey = (e) => {
+    if (e.code === "Enter") { e.preventDefault(); commit(); }
+    if (e.code === "Escape") { e.preventDefault(); cleanup(); nameEl.textContent = originalText; }
+  };
+  const onBlur = () => commit();
+  nameEl.addEventListener("keydown", onKey);
+  nameEl.addEventListener("blur", onBlur, { once: true });
+}
+
+async function openMoveModal(file) {
+  const modal = $("move-modal");
+  const input = $("move-input");
+  const list = $("move-suggestions");
+  const currentDir = file.rel_path.split("/").slice(0, -1).join("/");
+  input.value = currentDir;
+  list.innerHTML = `<div class="row">Loading...</div>`;
+  modal.classList.remove("hidden");
+  input.focus();
+
+  let folders = [];
+  try {
+    const r = await fetch(`${HELPER}/folders?root=${currentRoot}`);
+    if (r.ok) folders = (await r.json()).folders || [];
+  } catch {}
+  renderSuggestions(folders, currentDir);
+
+  function renderSuggestions(all, q) {
+    const filtered = q
+      ? all.filter((f) => f.toLowerCase().includes(q.toLowerCase()))
+      : all;
+    list.innerHTML = "";
+    if (!filtered.length) {
+      list.innerHTML = `<div class="row" style="color:#777">No matching folders. The input value will be used as a new path.</div>`;
+      return;
+    }
+    for (const f of filtered.slice(0, 50)) {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.textContent = f;
+      row.addEventListener("click", () => { input.value = f; });
+      list.appendChild(row);
+    }
+  }
+
+  const onInput = () => renderSuggestions(folders, input.value.trim());
+  const confirmBtn = $("move-confirm");
+  const cancelBtn = $("move-cancel");
+
+  const close = () => {
+    modal.classList.add("hidden");
+    input.removeEventListener("input", onInput);
+    confirmBtn.removeEventListener("click", onConfirm);
+    cancelBtn.removeEventListener("click", close);
+  };
+  const onConfirm = async () => {
+    const target = input.value.trim();
+    if (target === currentDir) { close(); return; }
+    try {
+      const res = await fetch(`${HELPER}/file/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root: currentRoot, old_path: file.rel_path, new_dir: target }),
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        let m = t;
+        try { m = JSON.parse(t).detail || t; } catch {}
+        throw new Error(m);
+      }
+      close();
+      load();
+    } catch (e) {
+      alert(`Move failed: ${e.message}`);
+    }
+  };
+
+  input.addEventListener("input", onInput);
+  confirmBtn.addEventListener("click", onConfirm);
+  cancelBtn.addEventListener("click", close);
+}
+
+async function reclassify(file) {
+  if (!confirm(`Re-ask AI to categorize "${file.title || file.stem}"?\nFile will be moved if the AI picks a different folder.`)) return;
+  try {
+    const res = await fetch(`${HELPER}/file/reclassify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ root: currentRoot, path: file.rel_path }),
+    });
+    const text = await res.text();
+    let data = {};
+    try { data = JSON.parse(text); } catch {}
+    if (!res.ok) throw new Error(data.detail || text);
+    if (data.moved) {
+      alert(`Moved to ${data.folder} (${data.content_type})`);
+    } else {
+      alert(`Already in ${data.folder}. Tagged as ${data.content_type}.`);
+    }
+    load();
+  } catch (e) {
+    alert(`Reclassify failed: ${e.message}`);
+  }
+}
+
+async function createFolderHere() {
+  const name = prompt(`New folder name (in ${currentPath || "root"}):`);
+  if (!name) return;
+  const clean = name.trim();
+  if (!clean) return;
+  const path = currentPath ? `${currentPath}/${clean}` : clean;
+  try {
+    const res = await fetch(`${HELPER}/folder/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ root: currentRoot, path }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    load();
+  } catch (e) {
+    alert(`Create folder failed: ${e.message}`);
+  }
+}
+
+$("new-folder").addEventListener("click", createFolderHere);
 
 window.addEventListener("beforeunload", () => {
   if (currentFile) {

@@ -58,16 +58,121 @@ h1 { margin: 0; font-size: 18px; font-weight: 600; color: #fff; }
   width: 220px;
 }
 #filter:focus { outline: none; border-color: #cc0000; }
-#refresh {
+.toolbtn {
   background: #2a2a2a;
   border: 1px solid #333;
   color: #ccc;
-  width: 32px;
   height: 32px;
+  padding: 0 12px;
   border-radius: 6px;
   cursor: pointer;
+  font-size: 12px;
 }
-#refresh:hover { background: #333; }
+.toolbtn:hover { background: #333; }
+#refresh { width: 32px; padding: 0; }
+
+.context-menu {
+  position: fixed;
+  background: #1f1f1f;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 4px 0;
+  z-index: 50;
+  min-width: 180px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+  font-size: 13px;
+}
+.context-menu .item {
+  padding: 6px 14px;
+  cursor: pointer;
+  color: #ddd;
+}
+.context-menu .item:hover { background: #2a2a2a; color: #fff; }
+.context-menu .item.danger { color: #ff6b6b; }
+.context-menu .item.danger:hover { background: #4a1a1a; }
+.context-menu .sep {
+  height: 1px;
+  background: #2a2a2a;
+  margin: 4px 0;
+}
+
+.entry.file .body .name.editing {
+  background: #2a2a2a;
+  outline: 1px solid #1f6feb;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+.modal-card {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 22px;
+  width: 460px;
+  max-width: 90vw;
+}
+.modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: #fff;
+}
+.modal-card input {
+  width: 100%;
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #eee;
+  padding: 8px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  margin-bottom: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.modal-list {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #2a2a2a;
+  border-radius: 5px;
+  margin-bottom: 14px;
+}
+.modal-list .row {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #ccc;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.modal-list .row:hover { background: #2a2a2a; color: #fff; }
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.modal-actions button {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #ccc;
+  padding: 7px 14px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.modal-actions button:hover { background: #333; }
+.modal-actions button.primary {
+  background: #cc0000;
+  border-color: #cc0000;
+  color: #fff;
+}
+.modal-actions button.primary:hover { background: #a30000; }
 
 .breadcrumbs {
   display: flex;

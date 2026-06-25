@@ -15,7 +15,8 @@
         <button class="tab active" data-root="audio">🎵 Audio</button>
         <button class="tab" data-root="video">🎬 Video</button>
         <input type="search" id="filter" placeholder="Filter..." />
-        <button id="refresh" title="Refresh">↻</button>
+        <button id="new-folder" class="toolbtn" title="New folder in this location">+ Folder</button>
+        <button id="refresh" class="toolbtn" title="Refresh">↻</button>
       </div>
       <nav id="breadcrumbs" class="breadcrumbs"></nav>
     </header>
@@ -23,6 +24,20 @@
     <main id="browser" class="browser">
       <div class="loading">Loading...</div>
     </main>
+
+    <div id="context-menu" class="context-menu hidden"></div>
+
+    <div id="move-modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-title">Move to folder</div>
+        <input id="move-input" type="text" placeholder="Type or pick a destination folder" />
+        <div id="move-suggestions" class="modal-list"></div>
+        <div class="modal-actions">
+          <button id="move-cancel">Cancel</button>
+          <button id="move-confirm" class="primary">Move</button>
+        </div>
+      </div>
+    </div>
 
     <div id="resume-toast" class="resume-toast hidden">
       <span id="resume-text"></span>
