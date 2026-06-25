@@ -27,7 +27,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 DB_FILE = CONFIG_DIR / "library.db"
 PORT = 7531
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL_BY_PROVIDER = {
@@ -60,6 +60,7 @@ app.add_middleware(
 class DownloadRequest(BaseModel):
     url: str
     kind: str = "audio"  # "audio" or "video"
+    model: str | None = None  # one-off override of the configured model
 
 
 class ConfigUpdate(BaseModel):
@@ -701,14 +702,15 @@ def _categorize_ollama(user_msg: str, model: str, base_url: str | None) -> dict:
     return _parse_json_response(text)
 
 
-def categorize(info: dict, folders: list[dict]) -> dict:
+def categorize(info: dict, folders: list[dict], model_override: str | None = None) -> dict:
     cfg = read_config()
     user_msg = build_categorize_prompt(info, folders)
+    model = (model_override or cfg["model"]).strip() if (model_override or cfg["model"]) else cfg["model"]
     if cfg["provider"] == "openai":
-        return _categorize_openai(user_msg, cfg["model"], cfg["openai_api_key"])
+        return _categorize_openai(user_msg, model, cfg["openai_api_key"])
     if cfg["provider"] == "ollama":
-        return _categorize_ollama(user_msg, cfg["model"], cfg["ollama_url"])
-    return _categorize_anthropic(user_msg, cfg["model"], cfg["anthropic_api_key"])
+        return _categorize_ollama(user_msg, model, cfg["ollama_url"])
+    return _categorize_anthropic(user_msg, model, cfg["anthropic_api_key"])
 
 
 SAFE_CHARS = re.compile(r"[^a-zA-Z0-9\-_\. ]+")
@@ -1055,6 +1057,7 @@ def download(req: DownloadRequest):
         "title": title,
         "id3_genre": id3_genre,
         "source_url": req.url,
+        "model_used": req.model or None,
     }
 
 
