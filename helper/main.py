@@ -18,13 +18,13 @@ from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1
 from mutagen.mp3 import MP3
 from pydantic import BaseModel
 
-AUDIO_DIR = Path.home() / "YTD_DJ"
-VIDEO_DIR = Path.home() / "YTD_DJ_Video"
+DEFAULT_AUDIO_DIR = Path.home() / "YTD_DJ"
+DEFAULT_VIDEO_DIR = Path.home() / "YTD_DJ_Video"
 CONFIG_DIR = Path.home() / ".ytd_dj"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 PORT = 7531
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL_BY_PROVIDER = {
@@ -39,11 +39,9 @@ YOUTUBE_ID_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|v/))([A-Za-z0-9_-]{11})"
 )
 
-AUDIO_DIR.mkdir(exist_ok=True)
-VIDEO_DIR.mkdir(exist_ok=True)
+DEFAULT_AUDIO_DIR.mkdir(exist_ok=True)
+DEFAULT_VIDEO_DIR.mkdir(exist_ok=True)
 CONFIG_DIR.mkdir(exist_ok=True)
-
-ROOTS = {"audio": AUDIO_DIR, "video": VIDEO_DIR}
 
 app = FastAPI(title="YTD_DJ Helper")
 app.add_middleware(
@@ -57,6 +55,21 @@ app.add_middleware(
 class DownloadRequest(BaseModel):
     url: str
     kind: str = "audio"  # "audio" or "video"
+
+
+class ConfigUpdate(BaseModel):
+    audio_root: str | None = None
+    video_root: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
+    categorize_prompt: str | None = None
+
+
+class TestKeyRequest(BaseModel):
+    provider: str
+    key: str | None = None
 
 
 def _parse_config_file() -> dict:
@@ -132,10 +145,39 @@ def active_api_key(cfg: dict | None = None) -> str | None:
     return cfg["openai_api_key"] if cfg["provider"] == "openai" else cfg["anthropic_api_key"]
 
 
+def audio_root() -> Path:
+    raw = _parse_config_file()
+    path = raw.get("audio_root") or raw.get("AUDIO_ROOT")
+    p = Path(path).expanduser() if path else DEFAULT_AUDIO_DIR
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def video_root() -> Path:
+    raw = _parse_config_file()
+    path = raw.get("video_root") or raw.get("VIDEO_ROOT")
+    p = Path(path).expanduser() if path else DEFAULT_VIDEO_DIR
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_roots() -> dict:
+    return {"audio": audio_root(), "video": video_root()}
+
+
+def get_categorize_prompt() -> str:
+    raw = _parse_config_file()
+    override = raw.get("categorize_prompt") or raw.get("CATEGORIZE_PROMPT")
+    if override and isinstance(override, str) and override.strip():
+        return override
+    return CATEGORIZE_SYSTEM
+
+
 def root_for(kind: str) -> Path:
-    if kind not in ROOTS:
+    roots = get_roots()
+    if kind not in roots:
         raise HTTPException(400, f"Invalid kind/root: {kind}")
-    return ROOTS[kind]
+    return roots[kind]
 
 
 def safe_path(kind: str, rel: str) -> Path:
@@ -271,7 +313,7 @@ def _categorize_anthropic(user_msg: str, model: str, key: str | None) -> dict:
         system=[
             {
                 "type": "text",
-                "text": CATEGORIZE_SYSTEM,
+                "text": get_categorize_prompt(),
                 "cache_control": {"type": "ephemeral"},
             }
         ],
@@ -291,7 +333,7 @@ def _categorize_openai(user_msg: str, model: str, key: str | None) -> dict:
     resp = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": CATEGORIZE_SYSTEM},
+            {"role": "system", "content": get_categorize_prompt()},
             {"role": "user", "content": user_msg},
         ],
         response_format={"type": "json_object"},
@@ -360,14 +402,105 @@ def status():
     return {
         "ok": True,
         "version": VERSION,
-        "audio_root": str(AUDIO_DIR),
-        "video_root": str(VIDEO_DIR),
+        "audio_root": str(audio_root()),
+        "video_root": str(video_root()),
         "yt_dlp": shutil.which("yt-dlp") or "python module",
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "provider": cfg["provider"],
         "model": cfg["model"],
         "has_api_key": bool(active_api_key(cfg)),
     }
+
+
+@app.get("/config")
+def get_config():
+    raw = _parse_config_file()
+    cfg = read_config()
+    return {
+        "audio_root": str(audio_root()),
+        "video_root": str(video_root()),
+        "provider": cfg["provider"],
+        "model": cfg["model"],
+        "has_anthropic_key": bool(cfg["anthropic_api_key"]),
+        "has_openai_key": bool(cfg["openai_api_key"]),
+        "categorize_prompt": raw.get("categorize_prompt") or "",
+        "default_prompt": CATEGORIZE_SYSTEM,
+        "supported_providers": sorted(SUPPORTED_PROVIDERS),
+        "default_models": DEFAULT_MODEL_BY_PROVIDER,
+        "active_prompt_is_default": not bool(raw.get("categorize_prompt", "").strip())
+        if isinstance(raw.get("categorize_prompt"), str)
+        else True,
+    }
+
+
+@app.put("/config")
+def put_config(req: ConfigUpdate):
+    updates = req.model_dump(exclude_unset=True)
+
+    if "provider" in updates and updates["provider"]:
+        if updates["provider"].lower() not in SUPPORTED_PROVIDERS:
+            raise HTTPException(400, f"Unsupported provider: {updates['provider']}")
+        updates["provider"] = updates["provider"].lower()
+
+    for k in ("audio_root", "video_root"):
+        if k in updates and updates[k]:
+            try:
+                p = Path(updates[k]).expanduser()
+                p.mkdir(parents=True, exist_ok=True)
+                updates[k] = str(p)
+            except (OSError, RuntimeError) as e:
+                raise HTTPException(400, f"Cannot use {k}={updates[k]}: {e}")
+
+    raw = _parse_config_file()
+    if not isinstance(raw, dict):
+        raw = {}
+
+    for key, value in updates.items():
+        upper = key.upper()
+        if value in (None, ""):
+            raw.pop(key, None)
+            raw.pop(upper, None)
+        else:
+            raw[key] = value
+            raw.pop(upper, None)
+
+    CONFIG_DIR.mkdir(exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(raw, indent=2))
+    return {"ok": True}
+
+
+@app.post("/test-key")
+def test_key(req: TestKeyRequest):
+    provider = req.provider.lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(400, f"Unsupported provider: {provider}")
+
+    cfg = read_config()
+    actual_key = (req.key or "").strip() or (
+        cfg["openai_api_key"] if provider == "openai" else cfg["anthropic_api_key"]
+    )
+    if not actual_key:
+        return {"ok": False, "error": "No key provided or configured."}
+
+    try:
+        if provider == "anthropic":
+            client = Anthropic(api_key=actual_key)
+            client.messages.create(
+                model=DEFAULT_MODEL_BY_PROVIDER["anthropic"],
+                max_tokens=5,
+                messages=[{"role": "user", "content": "ok"}],
+            )
+        else:
+            from openai import OpenAI
+            client = OpenAI(api_key=actual_key)
+            client.chat.completions.create(
+                model=DEFAULT_MODEL_BY_PROVIDER["openai"],
+                max_completion_tokens=5,
+                messages=[{"role": "user", "content": "ok"}],
+            )
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
 
 
 @app.get("/version")
@@ -435,8 +568,9 @@ def update():
 
 @app.post("/download")
 def download(req: DownloadRequest):
-    kind = req.kind if req.kind in ROOTS else "audio"
-    base_root = ROOTS[kind]
+    roots = get_roots()
+    kind = req.kind if req.kind in roots else "audio"
+    base_root = roots[kind]
 
     if not shutil.which("ffmpeg"):
         raise HTTPException(500, "ffmpeg not found. Run: brew install ffmpeg")
@@ -548,7 +682,7 @@ def check(url: str = Query(...)):
         return result
 
     pruned = dict(entry)
-    for kind, root in ROOTS.items():
+    for kind, root in get_roots().items():
         rel = entry.get(kind)
         if rel and (root / rel).exists():
             result[kind] = rel
@@ -674,7 +808,7 @@ def delete_file(root: str = Query("audio"), path: str = Query(...)):
 if __name__ == "__main__":
     import uvicorn
 
-    print(f"YTD_DJ helper starting on http://127.0.0.1:{PORT}")
-    print(f"Audio library: {AUDIO_DIR}")
-    print(f"Video library: {VIDEO_DIR}")
+    print(f"YTD_DJ helper {VERSION} starting on http://127.0.0.1:{PORT}")
+    print(f"Audio library: {audio_root()}")
+    print(f"Video library: {video_root()}")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")
