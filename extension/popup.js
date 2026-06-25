@@ -147,6 +147,10 @@ $("open-browser").addEventListener("click", () => {
   chrome.tabs.create({ url: chrome.runtime.getURL("library.html") + "?root=" + currentRoot });
 });
 
+$("open-settings").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("settings.html") });
+});
+
 $("refresh").addEventListener("click", () => {
   checkStatus();
   loadLibrary();

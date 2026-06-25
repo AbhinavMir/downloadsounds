@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>YTD DJ — Settings</title>
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <header>
+      <div class="title-row">
+        <h1>Settings</h1>
+        <div id="status" class="status">loading...</div>
+      </div>
+      <div class="save-row">
+        <button id="save-btn" class="primary">Save</button>
+        <span id="save-msg" class="save-msg"></span>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>Library</h2>
+        <p class="hint">Where downloads are saved on disk. Paths starting with <code>~/</code> are expanded.</p>
+        <label>
+          <span>Audio root</span>
+          <input id="audio-root" type="text" placeholder="~/YTD_DJ" />
+        </label>
+        <label>
+          <span>Video root</span>
+          <input id="video-root" type="text" placeholder="~/YTD_DJ_Video" />
+        </label>
+      </section>
+
+      <section>
+        <h2>AI provider</h2>
+        <p class="hint">Used to categorize each download into a folder.</p>
+        <div id="provider-radios" class="radios"></div>
+        <label>
+          <span>Model</span>
+          <input id="model" type="text" placeholder="" />
+          <small id="model-hint" class="muted"></small>
+        </label>
+      </section>
+
+      <section>
+        <h2>API keys</h2>
+        <p class="hint">Keys are written to <code>~/.ytd_dj/config.json</code>. Only the key for your active provider is required.</p>
+
+        <label>
+          <span>Anthropic API key</span>
+          <div class="key-row">
+            <input id="anthropic-key" type="password" autocomplete="off" placeholder="sk-ant-..." />
+            <button class="reveal" data-target="anthropic-key" title="Show/hide">👁</button>
+            <button class="test" data-provider="anthropic">Test</button>
+          </div>
+          <small id="anthropic-key-status" class="muted"></small>
+        </label>
+
+        <label>
+          <span>OpenAI API key</span>
+          <div class="key-row">
+            <input id="openai-key" type="password" autocomplete="off" placeholder="sk-..." />
+            <button class="reveal" data-target="openai-key" title="Show/hide">👁</button>
+            <button class="test" data-provider="openai">Test</button>
+          </div>
+          <small id="openai-key-status" class="muted"></small>
+        </label>
+
+        <p class="hint">Leave a key blank to keep the existing one. Clear an existing key by typing <code>CLEAR</code>.</p>
+      </section>
+
+      <section>
+        <h2>Categorization prompt</h2>
+        <p class="hint">The system prompt used for AI categorization. Edit if the defaults aren't picking the folders you want. Empty = use default.</p>
+        <textarea id="prompt" rows="20" spellcheck="false"></textarea>
+        <div class="actions">
+          <button id="reset-prompt">Reset to default</button>
+          <span id="prompt-status" class="muted"></span>
+        </div>
+      </section>
+    </main>
+
+    <script src="settings.js"></script>
+  </body>
+</html>

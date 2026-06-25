@@ -53,6 +53,8 @@ h1 {
   color: #4a9eff;
 }
 .tab.open-btn:hover { color: #6cb2ff; }
+.tab.settings-btn { color: #aaa; }
+.tab.settings-btn:hover { color: #eee; }
 
 .controls {
   display: flex;
