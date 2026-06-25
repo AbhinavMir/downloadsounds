@@ -24,8 +24,14 @@ CONFIG_DIR = Path.home() / ".ytd_dj"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 PORT = 7531
-MODEL = "claude-sonnet-4-6"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
+
+DEFAULT_PROVIDER = "anthropic"
+DEFAULT_MODEL_BY_PROVIDER = {
+    "anthropic": "claude-sonnet-4-6",
+    "openai": "gpt-4o",
+}
+SUPPORTED_PROVIDERS = set(DEFAULT_MODEL_BY_PROVIDER.keys())
 REPO = "AbhinavMir/downloadsounds"
 REMOTE_VERSION_URL = f"https://raw.githubusercontent.com/{REPO}/main/VERSION"
 
@@ -53,47 +59,77 @@ class DownloadRequest(BaseModel):
     kind: str = "audio"  # "audio" or "video"
 
 
-def _read_config_key() -> str | None:
+def _parse_config_file() -> dict:
+    """Parse the helper config file. Accepts JSON object or .env-style key=value lines."""
     if not CONFIG_FILE.exists():
-        return None
+        return {}
     try:
         text = CONFIG_FILE.read_text().strip()
     except OSError:
-        return None
+        return {}
     if not text:
-        return None
+        return {}
     try:
-        cfg = json.loads(text)
-        if isinstance(cfg, dict):
-            for k in ("anthropic_api_key", "ANTHROPIC_API_KEY"):
-                if cfg.get(k):
-                    return cfg[k]
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
     except json.JSONDecodeError:
         pass
+    out = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         if "=" in line:
             k, _, v = line.partition("=")
-            if k.strip().upper() == "ANTHROPIC_API_KEY":
-                return v.strip().strip('"').strip("'")
-    return None
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
 
 
-def get_api_key() -> str | None:
-    return os.environ.get("ANTHROPIC_API_KEY") or _read_config_key()
+def read_config() -> dict:
+    """Return the merged effective config. Env vars override file; alias keys are normalized."""
+    raw = _parse_config_file()
+
+    def pick(*keys):
+        for k in keys:
+            if raw.get(k):
+                return raw[k]
+        return None
+
+    provider = (pick("provider", "PROVIDER") or DEFAULT_PROVIDER).lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        provider = DEFAULT_PROVIDER
+
+    model = pick("model", "MODEL", f"{provider}_model")
+    anthropic_key = pick("anthropic_api_key", "ANTHROPIC_API_KEY")
+    openai_key = pick("openai_api_key", "OPENAI_API_KEY")
+
+    # Env overrides
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        anthropic_key = os.environ["ANTHROPIC_API_KEY"]
+    if os.environ.get("OPENAI_API_KEY"):
+        openai_key = os.environ["OPENAI_API_KEY"]
+    if os.environ.get("YTD_PROVIDER"):
+        env_provider = os.environ["YTD_PROVIDER"].lower()
+        if env_provider in SUPPORTED_PROVIDERS:
+            provider = env_provider
+    if os.environ.get("YTD_MODEL"):
+        model = os.environ["YTD_MODEL"]
+
+    if not model:
+        model = DEFAULT_MODEL_BY_PROVIDER[provider]
+
+    return {
+        "provider": provider,
+        "model": model,
+        "anthropic_api_key": anthropic_key,
+        "openai_api_key": openai_key,
+    }
 
 
-def get_anthropic_client() -> Anthropic:
-    key = get_api_key()
-    if not key:
-        raise HTTPException(
-            500,
-            f"No Anthropic API key. Set ANTHROPIC_API_KEY or put "
-            f'ANTHROPIC_API_KEY=sk-... in {CONFIG_FILE}',
-        )
-    return Anthropic(api_key=key)
+def active_api_key(cfg: dict | None = None) -> str | None:
+    cfg = cfg or read_config()
+    return cfg["openai_api_key"] if cfg["provider"] == "openai" else cfg["anthropic_api_key"]
 
 
 def root_for(kind: str) -> Path:
@@ -203,11 +239,10 @@ FORCED_TOP_BY_TYPE = {"podcast": "podcasts", "spoken": "spoken", "other": "other
 DEFAULT_ID3_BY_TYPE = {"podcast": "Podcast", "spoken": "Spoken Word"}
 
 
-def categorize(info: dict, folders: list[dict]) -> dict:
-    client = get_anthropic_client()
+def build_categorize_prompt(info: dict, folders: list[dict]) -> str:
     desc = (info.get("description") or "")[:2000]
     tags = info.get("tags") or []
-    user_msg = (
+    return (
         f"Title: {info.get('title')}\n"
         f"Channel: {info.get('uploader')}\n"
         f"Duration: {info.get('duration')}s\n"
@@ -216,8 +251,22 @@ def categorize(info: dict, folders: list[dict]) -> dict:
         f"Description (first 2000 chars):\n{desc}\n\n"
         f"Existing folders:\n{json.dumps(folders, indent=2)}"
     )
+
+
+def _parse_json_response(text: str) -> dict:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return json.loads(text)
+
+
+def _categorize_anthropic(user_msg: str, model: str, key: str | None) -> dict:
+    if not key:
+        raise HTTPException(500, "Anthropic API key missing — set anthropic_api_key in ~/.ytd_dj/config.json")
+    client = Anthropic(api_key=key)
     resp = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=500,
         system=[
             {
@@ -228,11 +277,35 @@ def categorize(info: dict, folders: list[dict]) -> dict:
         ],
         messages=[{"role": "user", "content": user_msg}],
     )
-    text = resp.content[0].text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+    return _parse_json_response(resp.content[0].text)
+
+
+def _categorize_openai(user_msg: str, model: str, key: str | None) -> dict:
+    if not key:
+        raise HTTPException(500, "OpenAI API key missing — set openai_api_key in ~/.ytd_dj/config.json")
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise HTTPException(500, "openai package not installed. Run: pip install -r helper/requirements.txt")
+    client = OpenAI(api_key=key)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": CATEGORIZE_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
+        response_format={"type": "json_object"},
+        max_completion_tokens=500,
+    )
+    return _parse_json_response(resp.choices[0].message.content)
+
+
+def categorize(info: dict, folders: list[dict]) -> dict:
+    cfg = read_config()
+    user_msg = build_categorize_prompt(info, folders)
+    if cfg["provider"] == "openai":
+        return _categorize_openai(user_msg, cfg["model"], cfg["openai_api_key"])
+    return _categorize_anthropic(user_msg, cfg["model"], cfg["anthropic_api_key"])
 
 
 SAFE_CHARS = re.compile(r"[^a-zA-Z0-9\-_\. ]+")
@@ -283,6 +356,7 @@ def write_id3(mp3_path: Path, info: dict, title: str, artist: str, id3_genre: st
 
 @app.get("/status")
 def status():
+    cfg = read_config()
     return {
         "ok": True,
         "version": VERSION,
@@ -290,7 +364,9 @@ def status():
         "video_root": str(VIDEO_DIR),
         "yt_dlp": shutil.which("yt-dlp") or "python module",
         "ffmpeg": shutil.which("ffmpeg") is not None,
-        "has_api_key": bool(get_api_key()),
+        "provider": cfg["provider"],
+        "model": cfg["model"],
+        "has_api_key": bool(active_api_key(cfg)),
     }
 
 
