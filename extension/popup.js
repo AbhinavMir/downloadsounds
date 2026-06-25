@@ -6,6 +6,202 @@ let allItems = [];
 let libraryRoot = "";
 let currentRoot = "audio";
 
+// Popup-scoped player state
+let ppCurrent = null; // {root, rel_path, stem, ext, completed}
+let ppLastSaveAt = 0;
+const PP_THROTTLE_MS = 2000;
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function ppFlushPosition() {
+  if (!ppCurrent) return;
+  const audio = $("pp-audio");
+  if (!audio.currentTime) return;
+  fetch(`${HELPER}/db/position`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      root: ppCurrent.root,
+      path: ppCurrent.rel_path,
+      position_sec: audio.currentTime,
+      duration_sec: audio.duration || null,
+    }),
+  }).catch(() => {});
+}
+
+function ppFlushBeacon() {
+  if (!ppCurrent) return;
+  const audio = $("pp-audio");
+  if (!audio.currentTime) return;
+  try {
+    navigator.sendBeacon(
+      `${HELPER}/db/position`,
+      new Blob(
+        [
+          JSON.stringify({
+            root: ppCurrent.root,
+            path: ppCurrent.rel_path,
+            position_sec: audio.currentTime,
+            duration_sec: audio.duration || null,
+          }),
+        ],
+        { type: "application/json" },
+      ),
+    );
+  } catch (_) {}
+}
+
+function ppMarkCompleted() {
+  if (!ppCurrent) return;
+  fetch(`${HELPER}/db/completed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root: ppCurrent.root, path: ppCurrent.rel_path, completed: true }),
+  }).catch(() => {});
+}
+
+async function ppPlay(rel_path, info = {}) {
+  const audio = $("pp-audio");
+  const bar = $("pp-bar");
+
+  // Persist whatever was playing before swapping.
+  if (ppCurrent) ppFlushPosition();
+
+  // Audio-only in popup. Video plays in the library tab.
+  const ext = (rel_path.split(".").pop() || "").toLowerCase();
+  if (currentRoot !== "audio" || (ext !== "mp3" && ext !== "m4a")) {
+    chrome.tabs.create({
+      url: chrome.runtime.getURL("library.html") + "?root=" + currentRoot,
+    });
+    return;
+  }
+
+  ppCurrent = {
+    root: currentRoot,
+    rel_path,
+    completed: false,
+  };
+  ppLastSaveAt = 0;
+
+  audio.src = `${HELPER}/file?root=${currentRoot}&path=${encodeURIComponent(rel_path)}`;
+  $("pp-title").textContent = info.title || rel_path.split("/").pop().replace(/\.[^.]+$/, "");
+  $("pp-meta").textContent = rel_path;
+
+  let resumeAt = 0;
+  try {
+    const r = await fetch(`${HELPER}/db/file?root=${currentRoot}&path=${encodeURIComponent(rel_path)}`);
+    if (r.ok) {
+      const rec = await r.json();
+      if (rec && rec.position_sec > 0 && !rec.completed) resumeAt = rec.position_sec;
+      ppCurrent.completed = !!rec?.completed;
+    }
+  } catch (_) {}
+
+  audio.addEventListener(
+    "loadedmetadata",
+    () => {
+      if (resumeAt > 0 && resumeAt < (audio.duration || Infinity) - 2) {
+        audio.currentTime = resumeAt;
+      }
+      audio.play().catch(() => {});
+    },
+    { once: true },
+  );
+
+  highlightPlayingRow(rel_path);
+  bar.classList.remove("hidden");
+}
+
+function highlightPlayingRow(rel_path) {
+  document.querySelectorAll(".item.playing").forEach((el) => el.classList.remove("playing"));
+  document.querySelectorAll(".item").forEach((el) => {
+    if (el.dataset.path === rel_path) el.classList.add("playing");
+  });
+}
+
+function ppClose() {
+  const audio = $("pp-audio");
+  if (ppCurrent) ppFlushPosition();
+  audio.pause();
+  audio.removeAttribute("src");
+  ppCurrent = null;
+  $("pp-bar").classList.add("hidden");
+  document.querySelectorAll(".item.playing").forEach((el) => el.classList.remove("playing"));
+}
+
+$("pp-audio").addEventListener("timeupdate", () => {
+  if (!ppCurrent) return;
+  const audio = $("pp-audio");
+  const now = performance.now();
+  if (now - ppLastSaveAt >= PP_THROTTLE_MS) {
+    ppLastSaveAt = now;
+    ppFlushPosition();
+  }
+  if (audio.duration && !ppCurrent.completed && audio.currentTime / audio.duration > 0.9) {
+    ppCurrent.completed = true;
+    ppMarkCompleted();
+  }
+});
+$("pp-audio").addEventListener("pause", () => {
+  if (ppCurrent) {
+    ppLastSaveAt = performance.now();
+    ppFlushPosition();
+  }
+});
+$("pp-audio").addEventListener("ended", () => {
+  if (ppCurrent && !ppCurrent.completed) {
+    ppCurrent.completed = true;
+    ppMarkCompleted();
+  }
+});
+$("pp-close").addEventListener("click", ppClose);
+window.addEventListener("beforeunload", ppFlushBeacon);
+
+async function renderContinueSection() {
+  const section = $("continue-section");
+  const list = $("continue-list");
+  if (currentRoot !== "audio") {
+    section.classList.add("hidden");
+    return;
+  }
+  try {
+    const r = await fetch(`${HELPER}/db/continue?root=${currentRoot}&limit=6`);
+    if (!r.ok) throw new Error();
+    const data = await r.json();
+    if (!data.items?.length) {
+      section.classList.add("hidden");
+      return;
+    }
+    list.innerHTML = "";
+    for (const it of data.items) {
+      const row = document.createElement("div");
+      row.className = "continue-row";
+      const dur = it.duration_sec || 0;
+      const pct = dur ? Math.min(100, Math.round((100 * it.position_sec) / dur)) : 0;
+      const stem = it.rel_path.split("/").pop().replace(/\.[^.]+$/, "");
+      row.innerHTML = `
+        <span class="ttl"></span>
+        <span class="pos">${fmtTime(it.position_sec)}${dur ? " / " + fmtTime(dur) : ""}</span>
+        <div class="bar"><div style="width:${pct}%"></div></div>
+      `;
+      row.querySelector(".ttl").textContent = it.title || stem;
+      row.title = it.rel_path;
+      row.addEventListener("click", () => ppPlay(it.rel_path, { title: it.title }));
+      list.appendChild(row);
+    }
+    section.classList.remove("hidden");
+  } catch {
+    section.classList.add("hidden");
+  }
+}
+
 async function checkForUpdate() {
   const local = chrome.runtime.getManifest().version;
   let latest = null;
@@ -126,6 +322,8 @@ function render() {
       item.className = "item";
       item.textContent = it.name;
       item.title = it.rel_path;
+      item.dataset.path = it.rel_path;
+      item.addEventListener("click", () => ppPlay(it.rel_path, { title: it.name }));
       g.appendChild(item);
     }
     frag.appendChild(g);
@@ -140,6 +338,7 @@ document.querySelectorAll(".tab[data-root]").forEach((tab) => {
     tab.classList.add("active");
     currentRoot = tab.dataset.root;
     loadLibrary();
+    renderContinueSection();
   });
 });
 
@@ -171,4 +370,5 @@ $("update-btn").addEventListener("click", applyUpdate);
 
 checkStatus();
 loadLibrary();
+renderContinueSection();
 checkForUpdate();

@@ -6,9 +6,8 @@ let currentRoot = params.get("root") === "video" ? "video" : "audio";
 let currentPath = "";
 let currentData = null;
 let currentFile = null; // {root, rel_path, stem, ext, duration_sec, completed, ...}
-let lastSavedPos = -10;
-let positionSaveTimer = null;
-const POSITION_THROTTLE_MS = 1500;
+let lastSaveAt = 0; // wall-clock ms of the last successful position write
+const POSITION_THROTTLE_MS = 2000;
 
 function fmtSize(bytes) {
   if (!bytes) return "";
@@ -314,7 +313,7 @@ async function play(f) {
     title: f.title,
     completed: false,
   };
-  lastSavedPos = -10;
+  lastSaveAt = 0;
 
   // Fetch DB state for resume.
   let dbState = f.playback || null;
@@ -379,22 +378,20 @@ function markCompleted(file) {
 function setupMediaTracking(media) {
   media.addEventListener("timeupdate", () => {
     if (!currentFile) return;
-    const now = media.currentTime;
-    const dur = media.duration;
-    if (Math.abs(now - lastSavedPos) >= 1) {
-      clearTimeout(positionSaveTimer);
-      positionSaveTimer = setTimeout(() => {
-        lastSavedPos = now;
-        flushPosition(currentFile, now, dur);
-      }, POSITION_THROTTLE_MS);
+    const wallNow = performance.now();
+    if (wallNow - lastSaveAt >= POSITION_THROTTLE_MS) {
+      lastSaveAt = wallNow;
+      flushPosition(currentFile, media.currentTime, media.duration);
     }
-    if (dur && !currentFile.completed && now / dur > 0.9) {
+    const dur = media.duration;
+    if (dur && !currentFile.completed && media.currentTime / dur > 0.9) {
       currentFile.completed = true;
       markCompleted(currentFile);
     }
   });
   media.addEventListener("pause", () => {
     if (currentFile && media.currentTime > 0) {
+      lastSaveAt = performance.now();
       flushPosition(currentFile, media.currentTime, media.duration);
     }
   });
