@@ -28,9 +28,11 @@ async function load() {
     $("audio-root").value = cfg.audio_root || "";
     $("video-root").value = cfg.video_root || "";
     $("model").value = cfg.model || "";
+    $("ollama-url").value = cfg.ollama_url || "";
 
     renderProviderRadios(cfg.provider);
     updateModelHint();
+    updateProviderVisibility();
 
     $("anthropic-key").value = "";
     $("openai-key").value = "";
@@ -64,9 +66,13 @@ function renderProviderRadios(active) {
     input.addEventListener("change", () => {
       currentProvider = p;
       updateModelHint();
+      updateProviderVisibility();
     });
     const span = document.createElement("span");
-    span.textContent = p === "anthropic" ? "Anthropic (Claude)" : p === "openai" ? "OpenAI" : p;
+    span.textContent =
+      p === "anthropic" ? "Anthropic (Claude)" :
+      p === "openai" ? "OpenAI" :
+      p === "ollama" ? "Ollama (local)" : p;
     label.appendChild(input);
     label.appendChild(span);
     wrap.appendChild(label);
@@ -77,6 +83,12 @@ function updateModelHint() {
   const hint = $("model-hint");
   const def = defaultModels[currentProvider];
   hint.textContent = def ? `Leave blank for default: ${def}` : "";
+}
+
+function updateProviderVisibility() {
+  document.querySelectorAll(".ollama-field").forEach((el) => {
+    el.classList.toggle("hidden", currentProvider !== "ollama");
+  });
 }
 
 async function save() {
@@ -100,6 +112,9 @@ async function save() {
   const ok = $("openai-key").value.trim();
   if (ok === "CLEAR") body.openai_api_key = "";
   else if (ok) body.openai_api_key = ok;
+
+  const ollUrl = $("ollama-url").value.trim();
+  body.ollama_url = ollUrl || "";
 
   const promptValue = $("prompt").value;
   if (!promptValue.trim() || promptValue.trim() === defaultPrompt.trim()) {
@@ -133,21 +148,33 @@ async function save() {
 }
 
 async function testKey(provider) {
-  const target = provider === "anthropic" ? "anthropic-key" : "openai-key";
+  let target, body;
+  if (provider === "ollama") {
+    target = "ollama-url";
+    body = { provider, url: $("ollama-url").value.trim() || null };
+  } else {
+    target = provider === "anthropic" ? "anthropic-key" : "openai-key";
+    body = { provider, key: $(target).value.trim() || null };
+  }
   const statusEl = $(`${target}-status`);
-  const key = $(target).value.trim();
   statusEl.className = "muted";
   statusEl.textContent = "Testing...";
   try {
     const res = await fetch(`${HELPER}/test-key`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider, key: key || null }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (data.ok) {
       statusEl.className = "muted ok";
-      statusEl.textContent = "Key works.";
+      let msg = "Works.";
+      if (provider === "ollama" && data.models) {
+        msg = data.models.length
+          ? `Reachable. Models: ${data.models.slice(0, 6).join(", ")}${data.models.length > 6 ? "..." : ""}`
+          : "Reachable, but no models installed. Run: ollama pull llama3.1:8b";
+      }
+      statusEl.textContent = msg;
     } else {
       statusEl.className = "muted err";
       statusEl.textContent = `Failed: ${data.error || "Unknown error"}`;

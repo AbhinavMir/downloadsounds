@@ -164,3 +164,5 @@ input:focus, textarea:focus {
   cursor: pointer;
 }
 .actions button:hover { background: #333; }
+
+.hidden { display: none !important; }

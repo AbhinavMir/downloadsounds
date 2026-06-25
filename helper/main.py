@@ -27,14 +27,16 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 DB_FILE = CONFIG_DIR / "library.db"
 PORT = 7531
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL_BY_PROVIDER = {
     "anthropic": "claude-sonnet-4-6",
     "openai": "gpt-4o",
+    "ollama": "llama3.1:8b",
 }
 SUPPORTED_PROVIDERS = set(DEFAULT_MODEL_BY_PROVIDER.keys())
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
 REPO = "AbhinavMir/downloadsounds"
 REMOTE_VERSION_URL = f"https://raw.githubusercontent.com/{REPO}/main/VERSION"
 
@@ -67,12 +69,14 @@ class ConfigUpdate(BaseModel):
     model: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
+    ollama_url: str | None = None
     categorize_prompt: str | None = None
 
 
 class TestKeyRequest(BaseModel):
     provider: str
     key: str | None = None
+    url: str | None = None
 
 
 class PositionUpdate(BaseModel):
@@ -154,12 +158,15 @@ def read_config() -> dict:
     model = pick("model", "MODEL", f"{provider}_model")
     anthropic_key = pick("anthropic_api_key", "ANTHROPIC_API_KEY")
     openai_key = pick("openai_api_key", "OPENAI_API_KEY")
+    ollama_url = pick("ollama_url", "OLLAMA_URL") or DEFAULT_OLLAMA_URL
 
     # Env overrides
     if os.environ.get("ANTHROPIC_API_KEY"):
         anthropic_key = os.environ["ANTHROPIC_API_KEY"]
     if os.environ.get("OPENAI_API_KEY"):
         openai_key = os.environ["OPENAI_API_KEY"]
+    if os.environ.get("OLLAMA_URL"):
+        ollama_url = os.environ["OLLAMA_URL"]
     if os.environ.get("YTD_PROVIDER"):
         env_provider = os.environ["YTD_PROVIDER"].lower()
         if env_provider in SUPPORTED_PROVIDERS:
@@ -175,12 +182,17 @@ def read_config() -> dict:
         "model": model,
         "anthropic_api_key": anthropic_key,
         "openai_api_key": openai_key,
+        "ollama_url": ollama_url,
     }
 
 
 def active_api_key(cfg: dict | None = None) -> str | None:
     cfg = cfg or read_config()
-    return cfg["openai_api_key"] if cfg["provider"] == "openai" else cfg["anthropic_api_key"]
+    if cfg["provider"] == "openai":
+        return cfg["openai_api_key"]
+    if cfg["provider"] == "anthropic":
+        return cfg["anthropic_api_key"]
+    return None  # ollama doesn't use a key
 
 
 def audio_root() -> Path:
@@ -654,11 +666,48 @@ def _categorize_openai(user_msg: str, model: str, key: str | None) -> dict:
     return _parse_json_response(resp.choices[0].message.content)
 
 
+def _categorize_ollama(user_msg: str, model: str, base_url: str | None) -> dict:
+    url = (base_url or DEFAULT_OLLAMA_URL).rstrip("/") + "/api/chat"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": get_categorize_prompt()},
+            {"role": "user", "content": user_msg},
+        ],
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0},
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8")[:200]
+        except Exception:
+            pass
+        raise HTTPException(500, f"Ollama HTTP {e.code} from {url}: {body or e.reason}")
+    except urllib.error.URLError as e:
+        raise HTTPException(500, f"Ollama unreachable at {url}: {e}")
+    text = (data.get("message") or {}).get("content") or ""
+    if not text.strip():
+        raise HTTPException(500, "Ollama returned empty response")
+    return _parse_json_response(text)
+
+
 def categorize(info: dict, folders: list[dict]) -> dict:
     cfg = read_config()
     user_msg = build_categorize_prompt(info, folders)
     if cfg["provider"] == "openai":
         return _categorize_openai(user_msg, cfg["model"], cfg["openai_api_key"])
+    if cfg["provider"] == "ollama":
+        return _categorize_ollama(user_msg, cfg["model"], cfg["ollama_url"])
     return _categorize_anthropic(user_msg, cfg["model"], cfg["anthropic_api_key"])
 
 
@@ -711,6 +760,7 @@ def write_id3(mp3_path: Path, info: dict, title: str, artist: str, id3_genre: st
 @app.get("/status")
 def status():
     cfg = read_config()
+    needs_key = cfg["provider"] in {"anthropic", "openai"}
     return {
         "ok": True,
         "version": VERSION,
@@ -720,7 +770,7 @@ def status():
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "provider": cfg["provider"],
         "model": cfg["model"],
-        "has_api_key": bool(active_api_key(cfg)),
+        "has_api_key": (not needs_key) or bool(active_api_key(cfg)),
     }
 
 
@@ -735,6 +785,8 @@ def get_config():
         "model": cfg["model"],
         "has_anthropic_key": bool(cfg["anthropic_api_key"]),
         "has_openai_key": bool(cfg["openai_api_key"]),
+        "ollama_url": cfg["ollama_url"],
+        "default_ollama_url": DEFAULT_OLLAMA_URL,
         "categorize_prompt": raw.get("categorize_prompt") or "",
         "default_prompt": CATEGORIZE_SYSTEM,
         "supported_providers": sorted(SUPPORTED_PROVIDERS),
@@ -788,6 +840,17 @@ def test_key(req: TestKeyRequest):
         raise HTTPException(400, f"Unsupported provider: {provider}")
 
     cfg = read_config()
+
+    if provider == "ollama":
+        url = (req.url or cfg["ollama_url"] or DEFAULT_OLLAMA_URL).rstrip("/")
+        try:
+            with urllib.request.urlopen(url + "/api/tags", timeout=4) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+            return {"ok": True, "models": models[:50]}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:300]}
+
     actual_key = (req.key or "").strip() or (
         cfg["openai_api_key"] if provider == "openai" else cfg["anthropic_api_key"]
     )
