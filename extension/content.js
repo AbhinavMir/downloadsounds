@@ -1,8 +1,31 @@
 (function () {
   const HELPER = "http://127.0.0.1:7531";
   const WRAP_ID = "ytd-dj-buttons";
+  const SELECT_ID = "ytd-dj-model";
+  const STORAGE_KEY = "ytd-dj-model-override";
   const LABELS = { audio: "Download MP3", video: "Download Video" };
   const DONE_LABELS = { audio: "Audio downloaded", video: "Video downloaded" };
+
+  const MODEL_PRESETS = {
+    anthropic: [
+      { value: "", label: "Default" },
+      { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5 (cheap)" },
+      { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+      { value: "claude-opus-4-8", label: "Opus 4.8 (best)" },
+    ],
+    openai: [
+      { value: "", label: "Default" },
+      { value: "gpt-4o-mini", label: "GPT-4o mini" },
+      { value: "gpt-4o", label: "GPT-4o" },
+      { value: "gpt-5", label: "GPT-5" },
+    ],
+    ollama: [
+      { value: "", label: "Default" },
+    ],
+  };
+
+  let activeProvider = null;
+  let modelOverride = "";
 
   function findAnchor() {
     return (
@@ -48,10 +71,12 @@
     btn.disabled = true;
     setState(btn, null, kind === "video" ? "Downloading video..." : "Downloading...");
     try {
+      const body = { url: location.href, kind };
+      if (modelOverride) body.model = modelOverride;
       const res = await fetch(`${HELPER}/download`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: location.href, kind }),
+        body: JSON.stringify(body),
       });
       const text = await res.text();
       if (!res.ok) {
@@ -82,6 +107,74 @@
     return btn;
   }
 
+  function makeModelSelect() {
+    const sel = document.createElement("select");
+    sel.id = SELECT_ID;
+    sel.className = "ytd-dj-select";
+    sel.title = "Override the AI model for this download";
+    rebuildSelectOptions(sel);
+    sel.addEventListener("change", () => {
+      modelOverride = sel.value;
+      saveOverride(modelOverride);
+    });
+    return sel;
+  }
+
+  function rebuildSelectOptions(sel) {
+    const presets = MODEL_PRESETS[activeProvider] || MODEL_PRESETS.anthropic;
+    sel.innerHTML = "";
+    let found = false;
+    for (const p of presets) {
+      const opt = document.createElement("option");
+      opt.value = p.value;
+      opt.textContent = p.label;
+      sel.appendChild(opt);
+      if (p.value === modelOverride) found = true;
+    }
+    if (modelOverride && !found) {
+      const opt = document.createElement("option");
+      opt.value = modelOverride;
+      opt.textContent = modelOverride;
+      sel.appendChild(opt);
+    }
+    sel.value = modelOverride || "";
+  }
+
+  function saveOverride(value) {
+    try {
+      if (chrome?.storage?.local) {
+        chrome.storage.local.set({ [STORAGE_KEY]: value });
+      } else {
+        localStorage.setItem(STORAGE_KEY, value);
+      }
+    } catch (_) {}
+  }
+
+  function loadOverride() {
+    return new Promise((resolve) => {
+      try {
+        if (chrome?.storage?.local) {
+          chrome.storage.local.get([STORAGE_KEY], (r) => resolve(r[STORAGE_KEY] || ""));
+          return;
+        }
+      } catch (_) {}
+      resolve(localStorage.getItem(STORAGE_KEY) || "");
+    });
+  }
+
+  async function fetchProvider() {
+    try {
+      const res = await fetch(`${HELPER}/status`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.provider && data.provider !== activeProvider) {
+        activeProvider = data.provider;
+        const sel = document.getElementById(SELECT_ID);
+        if (sel) rebuildSelectOptions(sel);
+      }
+    } catch (_) {}
+  }
+
   async function applyExistingStatus(audioBtn, videoBtn) {
     try {
       const res = await fetch(`${HELPER}/check?url=${encodeURIComponent(location.href)}`);
@@ -105,8 +198,10 @@
     const videoBtn = makeButton("video", "ytd-dj-btn ytd-dj-video");
     wrap.appendChild(audioBtn);
     wrap.appendChild(videoBtn);
+    wrap.appendChild(makeModelSelect());
     anchor.appendChild(wrap);
     applyExistingStatus(audioBtn, videoBtn);
+    fetchProvider();
   }
 
   let lastUrl = location.href;
@@ -119,6 +214,10 @@
     injectButtons();
   });
   observer.observe(document.body, { childList: true, subtree: true });
+
+  loadOverride().then((saved) => {
+    modelOverride = saved || "";
+  });
 
   setTimeout(injectButtons, 800);
   setTimeout(injectButtons, 2000);
