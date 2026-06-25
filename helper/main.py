@@ -2,11 +2,13 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 
 import yt_dlp
@@ -23,8 +25,9 @@ DEFAULT_VIDEO_DIR = Path.home() / "YTD_DJ_Video"
 CONFIG_DIR = Path.home() / ".ytd_dj"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
+DB_FILE = CONFIG_DIR / "library.db"
 PORT = 7531
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL_BY_PROVIDER = {
@@ -70,6 +73,19 @@ class ConfigUpdate(BaseModel):
 class TestKeyRequest(BaseModel):
     provider: str
     key: str | None = None
+
+
+class PositionUpdate(BaseModel):
+    root: str
+    path: str
+    position_sec: float
+    duration_sec: float | None = None
+
+
+class CompletedUpdate(BaseModel):
+    root: str
+    path: str
+    completed: bool = True
 
 
 def _parse_config_file() -> dict:
@@ -163,6 +179,251 @@ def video_root() -> Path:
 
 def get_roots() -> dict:
     return {"audio": audio_root(), "video": video_root()}
+
+
+def db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_FILE), check_same_thread=False, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root TEXT NOT NULL,
+    rel_path TEXT NOT NULL,
+    source_url TEXT,
+    video_id TEXT,
+    title TEXT,
+    artist TEXT,
+    content_type TEXT,
+    duration_sec REAL,
+    added_at INTEGER NOT NULL,
+    UNIQUE(root, rel_path)
+);
+
+CREATE TABLE IF NOT EXISTS playback (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    position_sec REAL DEFAULT 0,
+    completed INTEGER DEFAULT 0,
+    last_played_at INTEGER,
+    play_count INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS tags (
+    file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (file_id, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_video_id ON files(video_id);
+CREATE INDEX IF NOT EXISTS idx_playback_last_played
+    ON playback(last_played_at DESC);
+"""
+
+
+def db_init() -> None:
+    with closing(db_connect()) as conn:
+        conn.executescript(DB_SCHEMA)
+        conn.commit()
+
+
+def db_upsert_file(
+    root: str,
+    rel_path: str,
+    *,
+    source_url: str | None = None,
+    video_id: str | None = None,
+    title: str | None = None,
+    artist: str | None = None,
+    content_type: str | None = None,
+    duration_sec: float | None = None,
+) -> int:
+    with closing(db_connect()) as conn:
+        conn.execute(
+            """
+            INSERT INTO files
+              (root, rel_path, source_url, video_id, title, artist,
+               content_type, duration_sec, added_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(root, rel_path) DO UPDATE SET
+              source_url   = COALESCE(excluded.source_url, files.source_url),
+              video_id     = COALESCE(excluded.video_id, files.video_id),
+              title        = COALESCE(excluded.title, files.title),
+              artist       = COALESCE(excluded.artist, files.artist),
+              content_type = COALESCE(excluded.content_type, files.content_type),
+              duration_sec = COALESCE(excluded.duration_sec, files.duration_sec)
+            """,
+            (root, rel_path, source_url, video_id, title, artist,
+             content_type, duration_sec, int(time.time())),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id FROM files WHERE root=? AND rel_path=?",
+            (root, rel_path),
+        ).fetchone()
+        return int(row["id"]) if row else 0
+
+
+def db_get_file(root: str, rel_path: str) -> dict | None:
+    with closing(db_connect()) as conn:
+        f = conn.execute(
+            "SELECT * FROM files WHERE root=? AND rel_path=?",
+            (root, rel_path),
+        ).fetchone()
+        if not f:
+            return None
+        p = conn.execute(
+            "SELECT * FROM playback WHERE file_id=?", (f["id"],)
+        ).fetchone()
+        return {
+            "id": f["id"],
+            "root": f["root"],
+            "rel_path": f["rel_path"],
+            "source_url": f["source_url"],
+            "video_id": f["video_id"],
+            "title": f["title"],
+            "artist": f["artist"],
+            "content_type": f["content_type"],
+            "duration_sec": f["duration_sec"],
+            "added_at": f["added_at"],
+            "position_sec": (p["position_sec"] if p else 0) or 0,
+            "completed": bool(p and p["completed"]),
+            "last_played_at": p["last_played_at"] if p else None,
+            "play_count": (p["play_count"] if p else 0) or 0,
+        }
+
+
+def _ensure_file_id(conn: sqlite3.Connection, root: str, rel_path: str) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM files WHERE root=? AND rel_path=?",
+        (root, rel_path),
+    ).fetchone()
+    if row:
+        return int(row["id"])
+    full = root_for(root) / rel_path
+    if not full.exists():
+        return None
+    conn.execute(
+        """
+        INSERT INTO files (root, rel_path, added_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(root, rel_path) DO NOTHING
+        """,
+        (root, rel_path, int(time.time())),
+    )
+    row = conn.execute(
+        "SELECT id FROM files WHERE root=? AND rel_path=?",
+        (root, rel_path),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def db_update_position(root: str, rel_path: str, position_sec: float,
+                       duration_sec: float | None = None) -> None:
+    with closing(db_connect()) as conn:
+        fid = _ensure_file_id(conn, root, rel_path)
+        if fid is None:
+            raise HTTPException(404, "File not found")
+        if duration_sec:
+            conn.execute(
+                "UPDATE files SET duration_sec = ? WHERE id = ?",
+                (duration_sec, fid),
+            )
+        now = int(time.time())
+        conn.execute(
+            """
+            INSERT INTO playback (file_id, position_sec, last_played_at, play_count)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(file_id) DO UPDATE SET
+              position_sec   = excluded.position_sec,
+              last_played_at = excluded.last_played_at
+            """,
+            (fid, max(0.0, float(position_sec)), now),
+        )
+        conn.commit()
+
+
+def db_mark_completed(root: str, rel_path: str, completed: bool = True) -> None:
+    with closing(db_connect()) as conn:
+        fid = _ensure_file_id(conn, root, rel_path)
+        if fid is None:
+            raise HTTPException(404, "File not found")
+        now = int(time.time())
+        if completed:
+            conn.execute(
+                """
+                INSERT INTO playback (file_id, completed, last_played_at, play_count)
+                VALUES (?, 1, ?, 1)
+                ON CONFLICT(file_id) DO UPDATE SET
+                  completed       = 1,
+                  last_played_at  = excluded.last_played_at,
+                  play_count      = playback.play_count + 1
+                """,
+                (fid, now),
+            )
+        else:
+            conn.execute(
+                "UPDATE playback SET completed = 0 WHERE file_id = ?",
+                (fid,),
+            )
+        conn.commit()
+
+
+def db_continue_listening(root: str, limit: int = 20) -> list[dict]:
+    with closing(db_connect()) as conn:
+        rows = conn.execute(
+            """
+            SELECT f.root, f.rel_path, f.title, f.artist, f.duration_sec,
+                   p.position_sec, p.last_played_at
+            FROM playback p
+            JOIN files f ON p.file_id = f.id
+            WHERE p.position_sec > 0 AND p.completed = 0 AND f.root = ?
+            ORDER BY p.last_played_at DESC
+            LIMIT ?
+            """,
+            (root, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def db_delete_file(root: str, rel_path: str) -> None:
+    with closing(db_connect()) as conn:
+        conn.execute(
+            "DELETE FROM files WHERE root=? AND rel_path=?",
+            (root, rel_path),
+        )
+        conn.commit()
+
+
+def db_backfill_from_disk() -> int:
+    """Add files that exist on disk but aren't in the DB yet. Returns count added."""
+    added = 0
+    with closing(db_connect()) as conn:
+        existing = {
+            (r["root"], r["rel_path"])
+            for r in conn.execute("SELECT root, rel_path FROM files").fetchall()
+        }
+        now = int(time.time())
+        for kind, base in get_roots().items():
+            pattern = "*.mp3" if kind == "audio" else "*.mp4"
+            for f in base.rglob(pattern):
+                rel = str(f.relative_to(base))
+                if (kind, rel) in existing:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO files (root, rel_path, added_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(root, rel_path) DO NOTHING
+                    """,
+                    (kind, rel, now),
+                )
+                added += 1
+        conn.commit()
+    return added
 
 
 def get_categorize_prompt() -> str:
@@ -652,7 +913,20 @@ def download(req: DownloadRequest):
         write_id3(final_path, info, title, artist, id3_genre)
 
     rel_path = str(final_path.relative_to(base_root))
-    record_download(extract_video_id(req.url) or info.get("id"), kind, rel_path)
+    video_id = extract_video_id(req.url) or info.get("id")
+    record_download(video_id, kind, rel_path)
+    try:
+        db_upsert_file(
+            kind, rel_path,
+            source_url=req.url,
+            video_id=video_id,
+            title=title,
+            artist=artist,
+            content_type=content_type,
+            duration_sec=float(info["duration"]) if info.get("duration") else None,
+        )
+    except Exception as e:
+        print(f"DB upsert failed (non-fatal): {e}", file=sys.stderr)
 
     return {
         "success": True,
@@ -802,7 +1076,63 @@ def delete_file(root: str = Query("audio"), path: str = Query(...)):
                 hist.pop(vid)
     if changed:
         write_history(hist)
+    try:
+        db_delete_file(root, path)
+    except Exception as e:
+        print(f"DB delete failed (non-fatal): {e}", file=sys.stderr)
     return {"ok": True, "deleted": str(target)}
+
+
+@app.get("/db/file")
+def db_file_endpoint(root: str = Query(...), path: str = Query(...)):
+    if root not in get_roots():
+        raise HTTPException(400, f"Invalid root: {root}")
+    target = safe_path(root, path)
+    record = db_get_file(root, path)
+    if record is None:
+        if not target.exists():
+            raise HTTPException(404, "File not found")
+        db_upsert_file(root, path)
+        record = db_get_file(root, path)
+    return record
+
+
+@app.post("/db/position")
+def db_position_endpoint(req: PositionUpdate):
+    if req.root not in get_roots():
+        raise HTTPException(400, f"Invalid root: {req.root}")
+    db_update_position(req.root, req.path, req.position_sec, req.duration_sec)
+    return {"ok": True}
+
+
+@app.post("/db/completed")
+def db_completed_endpoint(req: CompletedUpdate):
+    if req.root not in get_roots():
+        raise HTTPException(400, f"Invalid root: {req.root}")
+    db_mark_completed(req.root, req.path, req.completed)
+    return {"ok": True}
+
+
+@app.get("/db/continue")
+def db_continue_endpoint(root: str = Query("audio"), limit: int = Query(20, ge=1, le=200)):
+    if root not in get_roots():
+        raise HTTPException(400, f"Invalid root: {root}")
+    return {"items": db_continue_listening(root, limit)}
+
+
+@app.post("/db/backfill")
+def db_backfill_endpoint():
+    added = db_backfill_from_disk()
+    return {"ok": True, "added": added}
+
+
+try:
+    db_init()
+    _added = db_backfill_from_disk()
+    if _added:
+        print(f"DB backfilled {_added} file(s) from disk", file=sys.stderr)
+except Exception as _e:
+    print(f"DB init/backfill failed (non-fatal): {_e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
