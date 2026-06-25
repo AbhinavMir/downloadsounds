@@ -24,10 +24,16 @@
       <div class="loading">Loading...</div>
     </main>
 
+    <div id="resume-toast" class="resume-toast hidden">
+      <span id="resume-text"></span>
+      <button id="resume-start-over">Start over</button>
+    </div>
+
     <div id="player-bar" class="player-bar hidden">
       <div class="player-info">
         <div id="player-title" class="player-title"></div>
         <div id="player-path" class="player-path"></div>
+        <div class="player-hint">Space play/pause · ← → seek 10s</div>
       </div>
       <div class="player-media">
         <audio id="player-audio" controls preload="metadata"></audio>

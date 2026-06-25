@@ -156,6 +156,111 @@ h1 { margin: 0; font-size: 18px; font-weight: 600; color: #fff; }
 
 .entry.folder .body:hover .name { color: #4a9eff; }
 .entry.file.playing { border-color: #cc0000; }
+.entry.file.completed .name::after {
+  content: " ✓";
+  color: #4caf50;
+}
+.entry.file.completed { opacity: 0.78; }
+.entry.file.in-progress { border-left: 3px solid #1f6feb; }
+
+.row-progress {
+  height: 3px;
+  background: #2a2a2a;
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+.row-progress > div {
+  height: 100%;
+  background: #1f6feb;
+  transition: width 0.2s;
+}
+
+.continue-section {
+  grid-column: 1 / -1;
+  margin-bottom: 24px;
+}
+.continue-section h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+}
+.continue-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.continue-card {
+  background: #1f1f1f;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.continue-card:hover {
+  background: #262626;
+  border-color: #1f6feb;
+}
+.continue-title {
+  font-weight: 500;
+  font-size: 13px;
+  color: #eee;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.continue-meta {
+  font-size: 11px;
+  color: #888;
+  margin: 4px 0 8px;
+}
+.continue-progress {
+  height: 4px;
+  background: #2a2a2a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.continue-progress > div {
+  height: 100%;
+  background: #1f6feb;
+}
+
+.resume-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 120px;
+  transform: translateX(-50%);
+  background: #1f6feb;
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 22px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 30;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+}
+.resume-toast button {
+  background: rgba(255,255,255,0.15);
+  border: none;
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.resume-toast button:hover { background: rgba(255,255,255,0.25); }
+
+.player-hint {
+  font-size: 10px;
+  color: #666;
+  margin-top: 2px;
+}
 
 .player-bar {
   position: fixed;
