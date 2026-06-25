@@ -303,7 +303,8 @@ async function play(f) {
   other.removeAttribute("src");
   other.classList.add("hidden");
   media.classList.remove("hidden");
-  media.src = url;
+  // src is set later, after the resume fetch completes and the
+  // loadedmetadata listener is attached.
 
   currentFile = {
     root: currentRoot,
@@ -315,7 +316,10 @@ async function play(f) {
   };
   lastSaveAt = 0;
 
-  // Fetch DB state for resume.
+  // Fetch DB state for resume BEFORE setting src + attaching the
+  // loadedmetadata listener. If we set src first and then awaited the
+  // fetch, the metadata could load (and fire) during the await, before
+  // the listener exists, and the seek would silently drop.
   let dbState = f.playback || null;
   try {
     const r = await fetch(`${HELPER}/db/file?root=${currentRoot}&path=${encodeURIComponent(f.rel_path)}`);
@@ -333,6 +337,9 @@ async function play(f) {
     media.play().catch(() => {});
   };
   media.addEventListener("loadedmetadata", onLoaded, { once: true });
+
+  // Setting src last ensures the listener is attached before load starts.
+  media.src = url;
 
   bar.classList.remove("hidden");
 }

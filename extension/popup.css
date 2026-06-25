@@ -152,15 +152,16 @@ h1 {
 .pp-bar {
   background: #1a1a1a;
   border-top: 1px solid #2a2a2a;
-  padding: 8px 12px;
+  padding: 10px 12px 12px;
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 6px;
+  row-gap: 8px;
+  column-gap: 8px;
   align-items: center;
 }
-.pp-info { min-width: 0; grid-column: 1 / -1; }
+.pp-info { min-width: 0; grid-column: 1; }
 .pp-title {
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 500;
   color: #fff;
   white-space: nowrap;
@@ -174,22 +175,72 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#pp-audio {
-  grid-column: 1;
-  width: 100%;
+.pp-controls {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pp-controls button {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #ddd;
+  width: 32px;
   height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pp-controls button:hover { background: #333; }
+#pp-toggle { background: #cc0000; border-color: #cc0000; color: #fff; }
+#pp-toggle:hover { background: #a30000; }
+.pp-progress {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.pp-time {
+  font-size: 10.5px;
+  color: #aaa;
+  min-width: 36px;
+  text-align: center;
+}
+.pp-bar-track {
+  flex: 1;
+  height: 5px;
+  background: #2a2a2a;
+  border-radius: 3px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+.pp-bar-fill {
+  height: 100%;
+  background: #cc0000;
+  width: 0;
+  transition: width 0.12s linear;
 }
 #pp-close {
-  grid-column: 2;
+  position: absolute;
+  top: 4px;
+  right: 4px;
   background: transparent;
   border: none;
   color: #888;
-  font-size: 18px;
+  font-size: 14px;
   cursor: pointer;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
 }
 #pp-close:hover { color: #fff; }
+.pp-bar { position: relative; }
 .group { padding: 4px 0; }
 .group-header {
   padding: 6px 14px 3px;
