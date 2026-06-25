@@ -27,7 +27,21 @@
       <button id="refresh" title="Refresh">↻</button>
     </div>
 
+    <div id="continue-section" class="continue-section hidden">
+      <div class="continue-header">Continue listening</div>
+      <div id="continue-list" class="continue-list"></div>
+    </div>
+
     <div id="library" class="library">Loading...</div>
+
+    <div id="pp-bar" class="pp-bar hidden">
+      <div class="pp-info">
+        <div id="pp-title" class="pp-title"></div>
+        <div id="pp-meta" class="pp-meta"></div>
+      </div>
+      <audio id="pp-audio" controls preload="metadata"></audio>
+      <button id="pp-close" title="Close player">×</button>
+    </div>
 
     <footer>
       <span id="count"></span>
