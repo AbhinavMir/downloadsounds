@@ -39,7 +39,18 @@
         <div id="pp-title" class="pp-title"></div>
         <div id="pp-meta" class="pp-meta"></div>
       </div>
-      <audio id="pp-audio" controls preload="metadata"></audio>
+      <div class="pp-controls">
+        <button id="pp-back" title="Back 10s">⏪</button>
+        <button id="pp-toggle" title="Play / pause">▶</button>
+        <button id="pp-fwd" title="Forward 10s">⏩</button>
+      </div>
+      <div class="pp-progress">
+        <span id="pp-cur" class="pp-time">0:00</span>
+        <div id="pp-bar-track" class="pp-bar-track">
+          <div id="pp-bar-fill" class="pp-bar-fill"></div>
+        </div>
+        <span id="pp-dur" class="pp-time">0:00</span>
+      </div>
       <button id="pp-close" title="Close player">×</button>
     </div>
 

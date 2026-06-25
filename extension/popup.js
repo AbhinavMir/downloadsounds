@@ -6,10 +6,15 @@ let allItems = [];
 let libraryRoot = "";
 let currentRoot = "audio";
 
-// Popup-scoped player state
-let ppCurrent = null; // {root, rel_path, stem, ext, completed}
-let ppLastSaveAt = 0;
-const PP_THROTTLE_MS = 2000;
+// All popup playback is delegated to a hidden offscreen document so audio
+// survives the popup being closed. The popup is purely a remote control:
+// it sends commands and renders the latest broadcast state.
+
+let ppCurrent = null; // mirror of offscreen's current track
+let ppPaused = true;
+let ppDuration = 0;
+let ppCurrentTime = 0;
+let pollTimer = null;
 
 function fmtTime(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
@@ -20,61 +25,54 @@ function fmtTime(sec) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function ppFlushPosition() {
-  if (!ppCurrent) return;
-  const audio = $("pp-audio");
-  if (!audio.currentTime) return;
-  fetch(`${HELPER}/db/position`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      root: ppCurrent.root,
-      path: ppCurrent.rel_path,
-      position_sec: audio.currentTime,
-      duration_sec: audio.duration || null,
-    }),
-  }).catch(() => {});
-}
-
-function ppFlushBeacon() {
-  if (!ppCurrent) return;
-  const audio = $("pp-audio");
-  if (!audio.currentTime) return;
+async function sendAudioCmd(cmd, extra = {}) {
   try {
-    navigator.sendBeacon(
-      `${HELPER}/db/position`,
-      new Blob(
-        [
-          JSON.stringify({
-            root: ppCurrent.root,
-            path: ppCurrent.rel_path,
-            position_sec: audio.currentTime,
-            duration_sec: audio.duration || null,
-          }),
-        ],
-        { type: "application/json" },
-      ),
-    );
-  } catch (_) {}
+    await chrome.runtime.sendMessage({ type: "ensure-audio" });
+    return await chrome.runtime.sendMessage({ type: "audio-cmd", cmd, ...extra });
+  } catch (e) {
+    console.error("[YTD DJ popup] audio cmd failed", cmd, e);
+    return null;
+  }
 }
 
-function ppMarkCompleted() {
-  if (!ppCurrent) return;
-  fetch(`${HELPER}/db/completed`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root: ppCurrent.root, path: ppCurrent.rel_path, completed: true }),
-  }).catch(() => {});
+function renderPlayerState() {
+  const bar = $("pp-bar");
+  if (!ppCurrent) {
+    bar.classList.add("hidden");
+    highlightPlayingRow(null);
+    return;
+  }
+  bar.classList.remove("hidden");
+  const stem = ppCurrent.rel_path.split("/").pop().replace(/\.[^.]+$/, "");
+  $("pp-title").textContent = ppCurrent.title || stem;
+  $("pp-meta").textContent = ppCurrent.rel_path;
+  $("pp-cur").textContent = fmtTime(ppCurrentTime);
+  $("pp-dur").textContent = fmtTime(ppDuration);
+  const pct = ppDuration ? Math.min(100, (100 * ppCurrentTime) / ppDuration) : 0;
+  $("pp-bar-fill").style.width = pct + "%";
+  $("pp-toggle").textContent = ppPaused ? "▶" : "❚❚";
+  highlightPlayingRow(ppCurrent.rel_path);
+}
+
+function applyState(state) {
+  if (!state) return;
+  ppCurrent = state.current;
+  ppPaused = state.paused;
+  ppDuration = state.duration || 0;
+  ppCurrentTime = state.currentTime || 0;
+  renderPlayerState();
+}
+
+function highlightPlayingRow(rel_path) {
+  document.querySelectorAll(".item.playing").forEach((el) => el.classList.remove("playing"));
+  if (!rel_path) return;
+  document.querySelectorAll(".item").forEach((el) => {
+    if (el.dataset.path === rel_path) el.classList.add("playing");
+  });
 }
 
 async function ppPlay(rel_path, info = {}) {
-  const audio = $("pp-audio");
-  const bar = $("pp-bar");
-
-  // Persist whatever was playing before swapping.
-  if (ppCurrent) ppFlushPosition();
-
-  // Audio-only in popup. Video plays in the library tab.
+  // Video files: hand off to the library tab.
   const ext = (rel_path.split(".").pop() || "").toLowerCase();
   if (currentRoot !== "audio" || (ext !== "mp3" && ext !== "m4a")) {
     chrome.tabs.create({
@@ -82,87 +80,52 @@ async function ppPlay(rel_path, info = {}) {
     });
     return;
   }
-
-  ppCurrent = {
-    root: currentRoot,
-    rel_path,
-    completed: false,
-  };
-  ppLastSaveAt = 0;
-
-  audio.src = `${HELPER}/file?root=${currentRoot}&path=${encodeURIComponent(rel_path)}`;
-  $("pp-title").textContent = info.title || rel_path.split("/").pop().replace(/\.[^.]+$/, "");
-  $("pp-meta").textContent = rel_path;
-
-  let resumeAt = 0;
-  try {
-    const r = await fetch(`${HELPER}/db/file?root=${currentRoot}&path=${encodeURIComponent(rel_path)}`);
-    if (r.ok) {
-      const rec = await r.json();
-      if (rec && rec.position_sec > 0 && !rec.completed) resumeAt = rec.position_sec;
-      ppCurrent.completed = !!rec?.completed;
-    }
-  } catch (_) {}
-
-  audio.addEventListener(
-    "loadedmetadata",
-    () => {
-      if (resumeAt > 0 && resumeAt < (audio.duration || Infinity) - 2) {
-        audio.currentTime = resumeAt;
-      }
-      audio.play().catch(() => {});
-    },
-    { once: true },
-  );
-
-  highlightPlayingRow(rel_path);
-  bar.classList.remove("hidden");
+  const state = await sendAudioCmd("play", { root: currentRoot, path: rel_path, title: info.title });
+  applyState(state);
 }
 
-function highlightPlayingRow(rel_path) {
-  document.querySelectorAll(".item.playing").forEach((el) => el.classList.remove("playing"));
-  document.querySelectorAll(".item").forEach((el) => {
-    if (el.dataset.path === rel_path) el.classList.add("playing");
-  });
+async function ppToggle() {
+  const state = await sendAudioCmd("toggle");
+  applyState(state);
 }
 
-function ppClose() {
-  const audio = $("pp-audio");
-  if (ppCurrent) ppFlushPosition();
-  audio.pause();
-  audio.removeAttribute("src");
-  ppCurrent = null;
-  $("pp-bar").classList.add("hidden");
-  document.querySelectorAll(".item.playing").forEach((el) => el.classList.remove("playing"));
+async function ppSeekBy(delta) {
+  const state = await sendAudioCmd("seek", { to: ppCurrentTime + delta });
+  applyState(state);
 }
 
-$("pp-audio").addEventListener("timeupdate", () => {
-  if (!ppCurrent) return;
-  const audio = $("pp-audio");
-  const now = performance.now();
-  if (now - ppLastSaveAt >= PP_THROTTLE_MS) {
-    ppLastSaveAt = now;
-    ppFlushPosition();
-  }
-  if (audio.duration && !ppCurrent.completed && audio.currentTime / audio.duration > 0.9) {
-    ppCurrent.completed = true;
-    ppMarkCompleted();
-  }
-});
-$("pp-audio").addEventListener("pause", () => {
-  if (ppCurrent) {
-    ppLastSaveAt = performance.now();
-    ppFlushPosition();
-  }
-});
-$("pp-audio").addEventListener("ended", () => {
-  if (ppCurrent && !ppCurrent.completed) {
-    ppCurrent.completed = true;
-    ppMarkCompleted();
-  }
-});
+async function ppSeekTo(frac) {
+  if (!ppDuration) return;
+  const state = await sendAudioCmd("seek", { to: ppDuration * frac });
+  applyState(state);
+}
+
+async function ppClose() {
+  const state = await sendAudioCmd("close");
+  applyState(state);
+}
+
+$("pp-toggle").addEventListener("click", ppToggle);
+$("pp-back").addEventListener("click", () => ppSeekBy(-10));
+$("pp-fwd").addEventListener("click", () => ppSeekBy(10));
 $("pp-close").addEventListener("click", ppClose);
-window.addEventListener("beforeunload", ppFlushBeacon);
+$("pp-bar-track").addEventListener("click", (e) => {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const frac = (e.clientX - rect.left) / rect.width;
+  ppSeekTo(Math.max(0, Math.min(1, frac)));
+});
+
+// Listen for broadcast state updates from the offscreen player.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "audio-state") applyState(msg.state);
+});
+
+// Poll once on open and on a slow interval as a safety net for missed
+// broadcasts. The chrome.runtime.sendMessage events are best-effort.
+async function pollOffscreenState() {
+  const state = await sendAudioCmd("state");
+  if (state) applyState(state);
+}
 
 async function renderContinueSection() {
   const section = $("continue-section");
@@ -372,3 +335,8 @@ checkStatus();
 loadLibrary();
 renderContinueSection();
 checkForUpdate();
+pollOffscreenState();
+pollTimer = setInterval(pollOffscreenState, 1000);
+window.addEventListener("beforeunload", () => {
+  if (pollTimer) clearInterval(pollTimer);
+});
