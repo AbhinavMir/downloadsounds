@@ -27,7 +27,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 DB_FILE = CONFIG_DIR / "library.db"
 PORT = 7531
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL_BY_PROVIDER = {
@@ -959,7 +959,7 @@ def download(req: DownloadRequest):
         raise HTTPException(400, f"yt-dlp metadata failed: {e}")
 
     try:
-        decision = categorize(info, list_folders(base_root))
+        decision = categorize(info, list_folders(base_root), model_override=req.model)
     except json.JSONDecodeError as e:
         raise HTTPException(500, f"AI returned invalid JSON: {e}")
 
