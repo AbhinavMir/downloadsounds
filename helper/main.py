@@ -25,7 +25,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 PORT = 7531
 MODEL = "claude-sonnet-4-6"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 REPO = "AbhinavMir/downloadsounds"
 REMOTE_VERSION_URL = f"https://raw.githubusercontent.com/{REPO}/main/VERSION"
 
@@ -156,19 +156,51 @@ def list_folders(base: Path) -> list[dict]:
     return out
 
 
-CATEGORIZE_SYSTEM = """You categorize YouTube downloads for a DJ's personal practice library (royalty-free / personal use only).
+CATEGORIZE_SYSTEM = """You categorize YouTube downloads for a personal practice library (royalty-free / personal use only).
 
 You receive video metadata and the current folder structure. You return a JSON object with these fields:
 
-- top_folder: top-level genre family in kebab-case (e.g., "house", "techno", "hip-hop", "dnb", "trance", "trap", "vocal-samples", "fx", "ambient", "lo-fi", "pop", "rock", "edm", "experimental", "world", "soundtrack"). Prefer an existing top folder; only invent a new one if the content truly doesn't fit any.
-- sub_folder: more specific style in kebab-case (e.g., "deep-house", "tech-house", "melodic-techno"). If unclear, use a generic descriptor like "general". Prefer existing sub-folders within the chosen top folder.
-- artist: clean artist name (e.g., "Daft Punk"). Extract from title if present (often "Artist - Track"), otherwise use the channel name. Strip noise like "Official", "VEVO", "Records".
-- title: clean track title without YouTube cruft. Strip "(Official Video)", "[HD]", "(Lyric Video)", "| Free Download", brackets noting genres, etc.
-- id3_genre: human-readable genre string for the ID3 TCON tag, used by Djay Pro filters (e.g., "Deep House", "Tech House", "Drum & Bass"). Title-case, spaces allowed.
+- content_type: one of "music", "podcast", "spoken", "other".
+  - "music"   = songs, DJ mixes, full sets, instrumentals, beats, sound-design sample packs intended for music use.
+  - "podcast" = recurring conversational/episodic shows by named hosts. Recognize by episode numbering, "Ep.", show branding, host introductions, RSS-like titles.
+  - "spoken"  = lectures, talks, interviews, audiobook excerpts, one-off spoken content that is not part of a regular podcast.
+  - "other"   = sound effects, ambient field recordings, jingles, tutorials, anything that does not fit the above.
 
-Be CONSERVATIVE about creating new top_folders. The goal is a tidy library. When in doubt, reuse the closest existing one.
+- top_folder: top-level folder in kebab-case.
+  - music   -> a genre family (e.g., "house", "techno", "hip-hop", "dnb", "trance", "trap", "ambient", "lo-fi", "pop", "rock", "edm", "experimental").
+  - podcast -> literally "podcasts".
+  - spoken  -> literally "spoken".
+  - other   -> literally "other".
+
+- sub_folder: more specific folder in kebab-case.
+  - music   -> a sub-genre (e.g., "deep-house", "melodic-techno"). Use "general" if unclear.
+  - podcast -> the show name in kebab-case (e.g., "huberman-lab", "lex-fridman", "this-american-life").
+  - spoken  -> a topic, course, or series name in kebab-case (e.g., "philosophy", "ai-research", "stanford-cs231n").
+  - other   -> a descriptive bucket in kebab-case (e.g., "fx-risers", "ambient", "drum-hits", "vocal-samples").
+
+  Prefer an existing sub_folder within the chosen top_folder when one fits.
+
+- artist: clean source attribution.
+  - music   -> artist (e.g., "Daft Punk"). Extract from title; fall back to channel. Strip "Official", "VEVO", "Records".
+  - podcast -> host or show name (e.g., "Andrew Huberman").
+  - spoken  -> speaker name (e.g., "Andrej Karpathy") or institution.
+  - other   -> descriptive source (e.g., "Splice Sounds", channel name).
+
+- title: clean content title. Strip "(Official Video)", "[HD]", "(Lyric Video)", "| Free Download", bracketed genre tags, etc. For podcasts, keep the episode subject but drop the show name + "Ep. N -" prefix (the show is captured in sub_folder).
+
+- id3_genre: human-readable genre string for the ID3 TCON tag.
+  - music   -> actual genre (e.g., "Deep House", "Tech House", "Drum & Bass").
+  - podcast -> "Podcast".
+  - spoken  -> "Spoken Word".
+  - other   -> descriptive (e.g., "Sound Effects", "Ambient").
+
+Be CONSERVATIVE about creating new top_folders and music sub_folders. The goal is a tidy library. When in doubt, reuse the closest existing one.
 
 Respond with ONLY a JSON object, no prose, no codefences."""
+
+CONTENT_TYPES = {"music", "podcast", "spoken", "other"}
+FORCED_TOP_BY_TYPE = {"podcast": "podcasts", "spoken": "spoken", "other": "other"}
+DEFAULT_ID3_BY_TYPE = {"podcast": "Podcast", "spoken": "Spoken Word"}
 
 
 def categorize(info: dict, folders: list[dict]) -> dict:
@@ -344,11 +376,22 @@ def download(req: DownloadRequest):
     except json.JSONDecodeError as e:
         raise HTTPException(500, f"AI returned invalid JSON: {e}")
 
-    top = slugify(decision.get("top_folder"), "unsorted")
+    content_type = str(decision.get("content_type") or "music").lower()
+    if content_type not in CONTENT_TYPES:
+        content_type = "music"
+
+    if content_type in FORCED_TOP_BY_TYPE:
+        top = FORCED_TOP_BY_TYPE[content_type]
+    else:
+        top = slugify(decision.get("top_folder"), "unsorted")
     sub = slugify(decision.get("sub_folder"), "general")
     artist = safe_filename(decision.get("artist"), "Unknown Artist")
     title = safe_filename(decision.get("title"), info.get("title") or "untitled")
-    id3_genre = decision.get("id3_genre") or sub.replace("-", " ").title()
+    id3_genre = (
+        decision.get("id3_genre")
+        or DEFAULT_ID3_BY_TYPE.get(content_type)
+        or sub.replace("-", " ").title()
+    )
 
     target_dir = base_root / top / sub
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -404,6 +447,7 @@ def download(req: DownloadRequest):
     return {
         "success": True,
         "kind": kind,
+        "content_type": content_type,
         "path": str(final_path),
         "rel_path": rel_path,
         "top_folder": top,
