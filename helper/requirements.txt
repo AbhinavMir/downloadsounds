@@ -3,4 +3,5 @@ uvicorn>=0.27
 yt-dlp>=2024.1.0
 mutagen>=1.47
 anthropic>=0.40
+openai>=1.40
 pydantic>=2.0
