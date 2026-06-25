@@ -27,7 +27,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 DB_FILE = CONFIG_DIR / "library.db"
 PORT = 7531
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL_BY_PROVIDER = {
@@ -998,6 +998,32 @@ def browse(root: str = Query("audio"), path: str = Query("")):
     target = safe_path(root, path)
     if not target.exists() or not target.is_dir():
         raise HTTPException(404, "Folder not found")
+
+    # Preload DB state for all files in this root so we can attach per-file
+    # playback metadata without N round-trips.
+    state_by_path: dict[str, dict] = {}
+    try:
+        with closing(db_connect()) as conn:
+            for r in conn.execute(
+                """
+                SELECT f.rel_path, f.duration_sec, f.title, f.artist,
+                       p.position_sec, p.completed, p.last_played_at
+                FROM files f LEFT JOIN playback p ON p.file_id = f.id
+                WHERE f.root = ?
+                """,
+                (root,),
+            ).fetchall():
+                state_by_path[r["rel_path"]] = {
+                    "duration_sec": r["duration_sec"],
+                    "title": r["title"],
+                    "artist": r["artist"],
+                    "position_sec": (r["position_sec"] if r["position_sec"] is not None else 0) or 0,
+                    "completed": bool(r["completed"]),
+                    "last_played_at": r["last_played_at"],
+                }
+    except Exception as e:
+        print(f"DB join in /browse failed (non-fatal): {e}", file=sys.stderr)
+
     folders = []
     files = []
     for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
@@ -1012,15 +1038,26 @@ def browse(root: str = Query("audio"), path: str = Query("")):
             folders.append({"name": child.name, "rel_path": rel, "count": child_count})
         elif child.is_file():
             ext = child.suffix.lower().lstrip(".")
-            files.append(
-                {
-                    "name": child.name,
-                    "stem": child.stem,
-                    "rel_path": rel,
-                    "size_bytes": child.stat().st_size,
-                    "ext": ext,
+            entry = {
+                "name": child.name,
+                "stem": child.stem,
+                "rel_path": rel,
+                "size_bytes": child.stat().st_size,
+                "ext": ext,
+            }
+            state = state_by_path.get(rel)
+            if state:
+                entry["playback"] = {
+                    "position_sec": state["position_sec"],
+                    "completed": state["completed"],
+                    "duration_sec": state["duration_sec"],
+                    "last_played_at": state["last_played_at"],
                 }
-            )
+                if state["title"]:
+                    entry["title"] = state["title"]
+                if state["artist"]:
+                    entry["artist"] = state["artist"]
+            files.append(entry)
     base = root_for(root)
     rel_here = "" if target == base else str(target.relative_to(base))
     return {

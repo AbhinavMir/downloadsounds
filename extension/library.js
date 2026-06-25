@@ -5,12 +5,26 @@ const params = new URLSearchParams(location.search);
 let currentRoot = params.get("root") === "video" ? "video" : "audio";
 let currentPath = "";
 let currentData = null;
+let currentFile = null; // {root, rel_path, stem, ext, duration_sec, completed, ...}
+let lastSavedPos = -10;
+let positionSaveTimer = null;
+const POSITION_THROTTLE_MS = 1500;
 
 function fmtSize(bytes) {
+  if (!bytes) return "";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 async function checkStatus() {
@@ -22,7 +36,9 @@ async function checkStatus() {
     if (!data.ffmpeg) parts.push("ffmpeg missing");
     if (!data.has_api_key) parts.push("no API key");
     el.className = "status " + (parts.length ? "err" : "ok");
-    el.textContent = parts.length ? "Helper up — " + parts.join(", ") : "Helper up";
+    el.textContent = parts.length
+      ? `Helper ${data.version} — ` + parts.join(", ")
+      : `Helper ${data.version}`;
   } catch {
     el.className = "status err";
     el.textContent = "Helper not running";
@@ -38,7 +54,7 @@ async function load() {
     if (!res.ok) throw new Error((await res.text()) || res.statusText);
     currentData = await res.json();
     renderBreadcrumbs();
-    renderBrowser();
+    await renderBrowser();
   } catch (e) {
     main.innerHTML = `<div class="empty">Error loading: ${e.message}</div>`;
   }
@@ -52,9 +68,7 @@ function renderBreadcrumbs() {
   const rootEl = document.createElement("a");
   rootEl.className = "crumb" + (currentPath ? "" : " current");
   rootEl.textContent = "~/" + root;
-  if (currentPath) {
-    rootEl.addEventListener("click", () => navigate(""));
-  }
+  if (currentPath) rootEl.addEventListener("click", () => navigate(""));
   bc.appendChild(rootEl);
 
   if (currentPath) {
@@ -85,14 +99,15 @@ function applyFilter(items, q) {
   return items.filter((i) => i.name.toLowerCase().includes(q));
 }
 
-function renderBrowser() {
+async function renderBrowser() {
   const main = $("browser");
   const q = ($("filter").value || "").trim();
   const folders = applyFilter(currentData.folders, q);
   const files = applyFilter(currentData.files, q);
 
   if (!folders.length && !files.length) {
-    main.innerHTML = `<div class="empty">${q ? "No matches." : "Empty folder."}</div>`;
+    main.innerHTML = q ? `<div class="empty">No matches.</div>` : `<div class="empty">Empty folder.</div>`;
+    if (!currentPath && !q) await renderContinueListening(main);
     return;
   }
 
@@ -122,14 +137,30 @@ function renderBrowser() {
 
   for (const f of files) {
     const isPlayable = f.ext === "mp3" || f.ext === "mp4" || f.ext === "m4a";
+    const completed = f.playback?.completed;
+    const inProgress = f.playback?.position_sec > 0 && !completed;
     const e = document.createElement("div");
-    e.className = "entry file";
+    e.className = "entry file" + (completed ? " completed" : "") + (inProgress ? " in-progress" : "");
     e.dataset.path = f.rel_path;
+
+    let progressBar = "";
+    if (inProgress && f.playback.duration_sec) {
+      const pct = Math.min(100, Math.max(0, (100 * f.playback.position_sec) / f.playback.duration_sec));
+      progressBar = `<div class="row-progress"><div style="width:${pct}%"></div></div>`;
+    }
+
+    const metaParts = [];
+    if (f.playback?.duration_sec) metaParts.push(fmtTime(f.playback.duration_sec));
+    if (inProgress) metaParts.push(`at ${fmtTime(f.playback.position_sec)}`);
+    if (completed) metaParts.push("✓ listened");
+    metaParts.push(fmtSize(f.size_bytes));
+
     e.innerHTML = `
       <div class="icon">${f.ext === "mp4" ? "🎬" : "🎵"}</div>
       <div class="body">
         <div class="name"></div>
-        <div class="meta">${fmtSize(f.size_bytes)}</div>
+        <div class="meta"></div>
+        ${progressBar}
       </div>
       <div class="actions">
         ${isPlayable ? `<button class="action-btn play" title="Play">▶</button>` : ""}
@@ -137,7 +168,8 @@ function renderBrowser() {
         <button class="action-btn danger del" title="Delete">🗑</button>
       </div>
     `;
-    e.querySelector(".name").textContent = f.stem;
+    e.querySelector(".name").textContent = f.title || f.stem;
+    e.querySelector(".meta").textContent = metaParts.filter(Boolean).join(" · ");
     if (isPlayable) {
       const playFn = () => play(f);
       e.querySelector(".body").addEventListener("click", playFn);
@@ -155,7 +187,56 @@ function renderBrowser() {
   }
 
   main.innerHTML = "";
+  if (!currentPath && !q) await renderContinueListening(main);
   main.appendChild(frag);
+}
+
+async function renderContinueListening(container) {
+  try {
+    const res = await fetch(`${HELPER}/db/continue?root=${currentRoot}&limit=10`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.items?.length) return;
+
+    const section = document.createElement("div");
+    section.className = "continue-section";
+    section.innerHTML = `<h2>Continue listening</h2><div class="continue-list"></div>`;
+    const list = section.querySelector(".continue-list");
+    for (const item of data.items) {
+      const card = document.createElement("div");
+      card.className = "continue-card";
+      const dur = item.duration_sec || 0;
+      const pct = dur ? Math.min(100, Math.round((100 * item.position_sec) / dur)) : 0;
+      const stem = item.rel_path.split("/").pop().replace(/\.[^.]+$/, "");
+      card.innerHTML = `
+        <div class="continue-title"></div>
+        <div class="continue-meta">${fmtTime(item.position_sec)}${dur ? " / " + fmtTime(dur) : ""}</div>
+        <div class="continue-progress"><div style="width:${pct}%"></div></div>
+      `;
+      card.querySelector(".continue-title").textContent = item.title || stem;
+      card.title = item.rel_path;
+      card.addEventListener("click", () => {
+        const ext = item.rel_path.split(".").pop().toLowerCase();
+        play({
+          rel_path: item.rel_path,
+          stem,
+          name: stem + "." + ext,
+          ext,
+          size_bytes: 0,
+          title: item.title,
+          playback: {
+            position_sec: item.position_sec,
+            duration_sec: dur,
+            completed: false,
+          },
+        });
+      });
+      list.appendChild(card);
+    }
+    container.appendChild(section);
+  } catch (e) {
+    // silent
+  }
 }
 
 function navigate(path) {
@@ -176,51 +257,187 @@ async function deleteFile(f) {
   try {
     const res = await fetch(`${HELPER}/file?root=${currentRoot}&path=${encodeURIComponent(f.rel_path)}`, { method: "DELETE" });
     if (!res.ok) throw new Error(await res.text());
+    if (currentFile && currentFile.rel_path === f.rel_path) closePlayer();
     load();
   } catch (e) {
     alert(`Delete failed: ${e.message}`);
   }
 }
 
-function play(f) {
+function getActiveMedia() {
+  const a = $("player-audio");
+  const v = $("player-video");
+  if (!a.classList.contains("hidden")) return a;
+  if (!v.classList.contains("hidden")) return v;
+  return null;
+}
+
+async function play(f) {
+  // Persist whatever the previous track was at before swapping.
+  if (currentFile) {
+    const media = getActiveMedia();
+    if (media && media.currentTime > 0) {
+      flushPosition(currentFile, media.currentTime, media.duration);
+    }
+  }
+
   const bar = $("player-bar");
   const audio = $("player-audio");
   const video = $("player-video");
   const url = `${HELPER}/file?root=${currentRoot}&path=${encodeURIComponent(f.rel_path)}`;
 
-  document.querySelectorAll(".entry.file.playing").forEach((e) => e.classList.remove("playing"));
+  document.querySelectorAll(".entry.file.playing").forEach((el) => el.classList.remove("playing"));
   const row = document.querySelector(`.entry.file[data-path="${CSS.escape(f.rel_path)}"]`);
   if (row) row.classList.add("playing");
 
-  $("player-title").textContent = f.stem;
+  $("player-title").textContent = f.title || f.stem;
   $("player-path").textContent = `${currentRoot === "video" ? "~/YTD_DJ_Video/" : "~/YTD_DJ/"}${f.rel_path}`;
 
-  if (f.ext === "mp4") {
-    audio.pause();
-    audio.src = "";
-    audio.classList.add("hidden");
-    video.classList.remove("hidden");
-    video.src = url;
-    video.play().catch(() => {});
-  } else {
-    video.pause();
-    video.src = "";
-    video.classList.add("hidden");
-    audio.classList.remove("hidden");
-    audio.src = url;
-    audio.play().catch(() => {});
-  }
+  const isVideo = f.ext === "mp4";
+  const media = isVideo ? video : audio;
+  const other = isVideo ? audio : video;
+  other.pause();
+  other.removeAttribute("src");
+  other.classList.add("hidden");
+  media.classList.remove("hidden");
+  media.src = url;
+
+  currentFile = {
+    root: currentRoot,
+    rel_path: f.rel_path,
+    stem: f.stem,
+    ext: f.ext,
+    title: f.title,
+    completed: false,
+  };
+  lastSavedPos = -10;
+
+  // Fetch DB state for resume.
+  let dbState = f.playback || null;
+  try {
+    const r = await fetch(`${HELPER}/db/file?root=${currentRoot}&path=${encodeURIComponent(f.rel_path)}`);
+    if (r.ok) dbState = await r.json();
+  } catch {}
+
+  const resumeAt = dbState?.position_sec > 0 && !dbState?.completed ? dbState.position_sec : 0;
+  currentFile.completed = !!dbState?.completed;
+
+  const onLoaded = () => {
+    if (resumeAt > 0 && resumeAt < (media.duration || Infinity) - 2) {
+      media.currentTime = resumeAt;
+      showResumeToast(resumeAt, media);
+    }
+    media.play().catch(() => {});
+  };
+  media.addEventListener("loadedmetadata", onLoaded, { once: true });
+
   bar.classList.remove("hidden");
 }
 
-function closePlayer() {
-  $("player-audio").pause();
-  $("player-audio").src = "";
-  $("player-video").pause();
-  $("player-video").src = "";
-  $("player-bar").classList.add("hidden");
-  document.querySelectorAll(".entry.file.playing").forEach((e) => e.classList.remove("playing"));
+function showResumeToast(at, media) {
+  const toast = $("resume-toast");
+  $("resume-text").textContent = `Resuming at ${fmtTime(at)}`;
+  toast.classList.remove("hidden");
+  const startOver = () => {
+    media.currentTime = 0;
+    toast.classList.add("hidden");
+    startOverBtn.removeEventListener("click", startOver);
+  };
+  const startOverBtn = $("resume-start-over");
+  startOverBtn.addEventListener("click", startOver, { once: true });
+  setTimeout(() => toast.classList.add("hidden"), 6000);
 }
+
+function flushPosition(file, position, duration) {
+  if (!file) return;
+  fetch(`${HELPER}/db/position`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      root: file.root,
+      path: file.rel_path,
+      position_sec: position,
+      duration_sec: duration || null,
+    }),
+  }).catch(() => {});
+}
+
+function markCompleted(file) {
+  fetch(`${HELPER}/db/completed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root: file.root, path: file.rel_path, completed: true }),
+  }).catch(() => {});
+  const row = document.querySelector(`.entry.file[data-path="${CSS.escape(file.rel_path)}"]`);
+  if (row) { row.classList.add("completed"); row.classList.remove("in-progress"); }
+}
+
+function setupMediaTracking(media) {
+  media.addEventListener("timeupdate", () => {
+    if (!currentFile) return;
+    const now = media.currentTime;
+    const dur = media.duration;
+    if (Math.abs(now - lastSavedPos) >= 1) {
+      clearTimeout(positionSaveTimer);
+      positionSaveTimer = setTimeout(() => {
+        lastSavedPos = now;
+        flushPosition(currentFile, now, dur);
+      }, POSITION_THROTTLE_MS);
+    }
+    if (dur && !currentFile.completed && now / dur > 0.9) {
+      currentFile.completed = true;
+      markCompleted(currentFile);
+    }
+  });
+  media.addEventListener("pause", () => {
+    if (currentFile && media.currentTime > 0) {
+      flushPosition(currentFile, media.currentTime, media.duration);
+    }
+  });
+  media.addEventListener("ended", () => {
+    if (currentFile && !currentFile.completed) {
+      currentFile.completed = true;
+      markCompleted(currentFile);
+    }
+  });
+}
+
+function closePlayer() {
+  const audio = $("player-audio");
+  const video = $("player-video");
+  if (currentFile) {
+    const m = getActiveMedia();
+    if (m && m.currentTime > 0) flushPosition(currentFile, m.currentTime, m.duration);
+  }
+  audio.pause(); audio.removeAttribute("src");
+  video.pause(); video.removeAttribute("src");
+  audio.classList.add("hidden");
+  video.classList.add("hidden");
+  $("player-bar").classList.add("hidden");
+  $("resume-toast").classList.add("hidden");
+  document.querySelectorAll(".entry.file.playing").forEach((el) => el.classList.remove("playing"));
+  currentFile = null;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input, textarea, [contenteditable]")) return;
+  if (!currentFile) return;
+  const media = getActiveMedia();
+  if (!media) return;
+  if (e.code === "Space") {
+    e.preventDefault();
+    if (media.paused) media.play(); else media.pause();
+  } else if (e.code === "ArrowRight") {
+    e.preventDefault();
+    media.currentTime = Math.min(media.duration || media.currentTime + 10, media.currentTime + 10);
+  } else if (e.code === "ArrowLeft") {
+    e.preventDefault();
+    media.currentTime = Math.max(0, media.currentTime - 10);
+  }
+});
+
+setupMediaTracking($("player-audio"));
+setupMediaTracking($("player-video"));
 
 document.querySelectorAll(".tab[data-root]").forEach((t) => {
   if (t.dataset.root === currentRoot) {
@@ -243,6 +460,29 @@ $("refresh").addEventListener("click", () => {
   load();
 });
 $("player-close").addEventListener("click", closePlayer);
+
+window.addEventListener("beforeunload", () => {
+  if (currentFile) {
+    const m = getActiveMedia();
+    if (m && m.currentTime > 0) {
+      navigator.sendBeacon &&
+        navigator.sendBeacon(
+          `${HELPER}/db/position`,
+          new Blob(
+            [
+              JSON.stringify({
+                root: currentFile.root,
+                path: currentFile.rel_path,
+                position_sec: m.currentTime,
+                duration_sec: m.duration || null,
+              }),
+            ],
+            { type: "application/json" },
+          ),
+        );
+    }
+  }
+});
 
 checkStatus();
 load();
