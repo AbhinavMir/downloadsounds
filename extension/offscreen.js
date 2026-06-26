@@ -172,7 +172,17 @@ async function handleCmd(msg) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.type !== "audio-cmd") return;
+  if (!msg) return;
+  if (msg.type === "offscreen-ping") {
+    sendResponse({ ready: true });
+    return;
+  }
+  if (msg.type !== "audio-cmd-fwd") return;
   handleCmd(msg).then(sendResponse).catch((e) => sendResponse({ error: String(e) }));
   return true;
 });
+
+// Announce ourselves so background's pending waiters can resolve. Best
+// effort — if no listener is up yet, background's safety-timeout ping
+// will catch us.
+chrome.runtime.sendMessage({ type: "offscreen-ready" }).catch(() => {});

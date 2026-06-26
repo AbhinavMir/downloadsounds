@@ -27,7 +27,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 DB_FILE = CONFIG_DIR / "library.db"
 PORT = 7531
-VERSION = "0.11.0"
+VERSION = "0.11.1"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL_BY_PROVIDER = {
