@@ -26,13 +26,34 @@ function fmtTime(sec) {
 }
 
 async function sendAudioCmd(cmd, extra = {}) {
-  try {
-    await chrome.runtime.sendMessage({ type: "ensure-audio" });
-    return await chrome.runtime.sendMessage({ type: "audio-cmd", cmd, ...extra });
-  } catch (e) {
-    console.error("[YTD DJ popup] audio cmd failed", cmd, e);
-    return null;
+  // Background proxies this through the offscreen document and waits for
+  // the offscreen's ready handshake before forwarding, so we don't have
+  // to deal with the listener-not-yet-registered race here.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: "audio-cmd", cmd, ...extra });
+      if (resp && resp.error) {
+        // Receiver-side issue; retry after a short delay.
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+          continue;
+        }
+        console.error("[YTD DJ popup] audio cmd error", cmd, resp.error);
+        return null;
+      }
+      return resp ?? null;
+    } catch (e) {
+      // "Could not establish connection" — service worker booting or
+      // offscreen not yet alive. Brief retry.
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+        continue;
+      }
+      console.error("[YTD DJ popup] audio cmd failed", cmd, e);
+      return null;
+    }
   }
+  return null;
 }
 
 function renderPlayerState() {
